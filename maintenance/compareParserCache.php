@@ -44,6 +44,7 @@ class CompareParserCache extends Maintenance {
 		$withcache = 0;
 		$withdiff = 0;
 		$parserCache = MediaWikiServices::getInstance()->getParserCache();
+		$renderer = MediaWikiServices::getInstance()->getRevisionRenderer();
 		while ( $pages-- > 0 ) {
 			$row = $dbr->selectRow( 'page',
 				// @todo Title::selectFields() or Title::getQueryInfo() or something
@@ -69,28 +70,31 @@ class CompareParserCache extends Maintenance {
 
 			$title = Title::newFromRow( $row );
 			$page = WikiPage::factory( $title );
-			$revision = $page->getRevision();
-			$content = $revision->getContent( Revision::RAW );
-
+			$revision = $page->getRevisionRecord();
 			$parserOptions = $page->makeParserOptions( 'canonical' );
 
 			$parserOutputOld = $parserCache->get( $page, $parserOptions );
 
 			if ( $parserOutputOld ) {
 				$t1 = microtime( true );
-				$parserOutputNew = $content->getParserOutput(
-					$title, $revision->getId(), $parserOptions, false );
+				$parserOutputNew = $renderer->getRenderedRevision( $revision, $parserOptions )
+					->getRevisionParserOutput();
+
 				$sec = microtime( true ) - $t1;
 				$totalsec += $sec;
 
 				$this->output( "Parsed '{$title->getPrefixedText()}' in $sec seconds.\n" );
 
 				$this->output( "Found cache entry found for '{$title->getPrefixedText()}'..." );
+
 				$oldHtml = trim( preg_replace( '#<!-- .+-->#Us', '', $parserOutputOld->getText() ) );
 				$newHtml = trim( preg_replace( '#<!-- .+-->#Us', '', $parserOutputNew->getText() ) );
-				$diff = wfDiff( $oldHtml, $newHtml );
-				if ( strlen( $diff ) ) {
-					$this->output( "differences found:\n\n$diff\n\n" );
+				$diffs = new Diff( explode( "\n", $oldHtml ), explode( "\n", $newHtml ) );
+				$formatter = new UnifiedDiffFormatter();
+				$unifiedDiff = $formatter->format( $diffs );
+
+				if ( strlen( $unifiedDiff ) ) {
+					$this->output( "differences found:\n\n$unifiedDiff\n\n" );
 					++$withdiff;
 				} else {
 					$this->output( "No differences found.\n" );

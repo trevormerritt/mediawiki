@@ -1,8 +1,18 @@
 <?php
 /**
  * Wrapper for Html::namespaceSelector to use in HTMLForm
+ *
+ * @stable to extend
  */
 class HTMLSelectNamespace extends HTMLFormField {
+
+	/** @var string|null */
+	protected $mAllValue;
+
+	/**
+	 * @stable to call
+	 * @inheritDoc
+	 */
 	public function __construct( $params ) {
 		parent::__construct( $params );
 
@@ -11,6 +21,10 @@ class HTMLSelectNamespace extends HTMLFormField {
 			: 'all';
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getInputHTML( $value ) {
 		return Html::namespaceSelector(
 			[
@@ -24,6 +38,10 @@ class HTMLSelectNamespace extends HTMLFormField {
 		);
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getInputOOUI( $value ) {
 		return new MediaWiki\Widget\NamespaceInputWidget( [
 			'value' => $value,
@@ -33,11 +51,19 @@ class HTMLSelectNamespace extends HTMLFormField {
 		] );
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	protected function getOOUIModules() {
 		// FIXME: NamespaceInputWidget should be in its own module (probably?)
 		return [ 'mediawiki.widgets' ];
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	protected function shouldInfuseOOUI() {
 		return true;
 	}

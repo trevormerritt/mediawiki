@@ -21,6 +21,9 @@
  * @ingroup Upload
  */
 
+use MediaWiki\MediaWikiServices;
+use MediaWiki\User\UserIdentity;
+
 /**
  * Implements uploading from a HTTP resource.
  *
@@ -40,12 +43,15 @@ class UploadFromUrl extends UploadBase {
 	 * user is not allowed, return the name of the user right as a string. If
 	 * the user is allowed, have the parent do further permissions checking.
 	 *
-	 * @param User $user
+	 * @param UserIdentity $user
 	 *
 	 * @return bool|string
 	 */
-	public static function isAllowed( $user ) {
-		if ( !$user->isAllowed( 'upload_by_url' ) ) {
+	public static function isAllowed( UserIdentity $user ) {
+		if ( !MediaWikiServices::getInstance()
+				->getPermissionManager()
+				->userHasRight( $user, 'upload_by_url' )
+		) {
 			return 'upload_by_url';
 		}
 
@@ -117,7 +123,7 @@ class UploadFromUrl extends UploadBase {
 	public static function isAllowedUrl( $url ) {
 		if ( !isset( self::$allowedUrls[$url] ) ) {
 			$allowed = true;
-			Hooks::run( 'IsUploadAllowedFromUrl', [ $url, &$allowed ] );
+			Hooks::runner()->onIsUploadAllowedFromUrl( $url, $allowed );
 			self::$allowedUrls[$url] = $allowed;
 		}
 
@@ -150,8 +156,7 @@ class UploadFromUrl extends UploadBase {
 		}
 		$this->initialize(
 			$desiredDestName,
-			trim( $request->getVal( 'wpUploadFileURL' ) ),
-			false
+			trim( $request->getVal( 'wpUploadFileURL' ) )
 		);
 	}
 
@@ -165,7 +170,9 @@ class UploadFromUrl extends UploadBase {
 		$url = $request->getVal( 'wpUploadFileURL' );
 
 		return !empty( $url )
-			&& $wgUser->isAllowed( 'upload_by_url' );
+			&& MediaWikiServices::getInstance()
+				   ->getPermissionManager()
+				   ->userHasRight( $wgUser, 'upload_by_url' );
 	}
 
 	/**
@@ -202,7 +209,8 @@ class UploadFromUrl extends UploadBase {
 	 * @return string Path to the file
 	 */
 	protected function makeTemporaryFile() {
-		$tmpFile = TempFSFile::factory( 'URL', 'urlupload_', wfTempDir() );
+		$tmpFile = MediaWikiServices::getInstance()->getTempFSFileFactory()
+			->newTempFSFile( 'URL', 'urlupload_' );
 		$tmpFile->bind( $this );
 
 		return $tmpFile->getPath();
@@ -258,7 +266,7 @@ class UploadFromUrl extends UploadBase {
 		$this->mRemoveTempFile = true;
 		$this->mFileSize = 0;
 
-		$options = $httpOptions + [ 'followRedirects' => true ];
+		$options = $httpOptions + [ 'followRedirects' => false ];
 
 		if ( $wgCopyUploadProxy !== false ) {
 			$options['proxy'] = $wgCopyUploadProxy;
@@ -272,9 +280,28 @@ class UploadFromUrl extends UploadBase {
 			'Starting download from "' . $this->mUrl . '" ' .
 				'<' . implode( ',', array_keys( array_filter( $options ) ) ) . '>'
 		);
-		$req = MWHttpRequest::factory( $this->mUrl, $options, __METHOD__ );
-		$req->setCallback( [ $this, 'saveTempFileChunk' ] );
-		$status = $req->execute();
+
+		// Manually follow any redirects up to the limit and reset the output file before each new request to prevent
+		// capturing the redirect response as part of the file.
+		$attemptsLeft = $options['maxRedirects'] ?? 5;
+		$targetUrl = $this->mUrl;
+		while ( $attemptsLeft > 0 ) {
+			$req = MWHttpRequest::factory( $targetUrl, $options, __METHOD__ );
+			$req->setCallback( [ $this, 'saveTempFileChunk' ] );
+			$status = $req->execute();
+			if ( !$req->isRedirect() ) {
+				break;
+			}
+			$targetUrl = $req->getFinalUrl();
+			// Remove redirect response content from file.
+			ftruncate( $this->mTmpHandle, 0 );
+			rewind( $this->mTmpHandle );
+			$attemptsLeft--;
+		}
+
+		if ( $attemptsLeft == 0 ) {
+			return Status::newFatal( 'upload-too-many-redirects' );
+		}
 
 		if ( $this->mTmpHandle ) {
 			// File got written ok...

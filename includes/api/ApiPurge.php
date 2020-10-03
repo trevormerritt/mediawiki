@@ -1,5 +1,4 @@
 <?php
-
 /**
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,15 +17,15 @@
  *
  * @file
  */
+
 use MediaWiki\Logger\LoggerFactory;
-use MediaWiki\MediaWikiServices;
 
 /**
  * API interface for page purging
  * @ingroup API
  */
 class ApiPurge extends ApiBase {
-	private $mPageSet;
+	private $mPageSet = null;
 
 	/**
 	 * Purges the cache of a page
@@ -59,45 +58,28 @@ class ApiPurge extends ApiBase {
 
 			if ( $forceLinkUpdate || $forceRecursiveLinkUpdate ) {
 				if ( !$user->pingLimiter( 'linkpurge' ) ) {
-					$popts = $page->makeParserOptions( 'canonical' );
-
-					# Parse content; note that HTML generation is only needed if we want to cache the result.
-					$content = $page->getContent( Revision::RAW );
-					if ( $content ) {
-						$enableParserCache = $this->getConfig()->get( 'EnableParserCache' );
-						$p_result = $content->getParserOutput(
-							$title,
-							$page->getLatest(),
-							$popts,
-							$enableParserCache
+					# Logging to better see expensive usage patterns
+					if ( $forceRecursiveLinkUpdate ) {
+						LoggerFactory::getInstance( 'RecursiveLinkPurge' )->info(
+							"Recursive link purge enqueued for {title}",
+							[
+								'user' => $this->getUser()->getName(),
+								'title' => $title->getPrefixedText()
+							]
 						);
-
-						# Logging to better see expensive usage patterns
-						if ( $forceRecursiveLinkUpdate ) {
-							LoggerFactory::getInstance( 'RecursiveLinkPurge' )->info(
-								"Recursive link purge enqueued for {title}",
-								[
-									'user' => $this->getUser()->getName(),
-									'title' => $title->getPrefixedText()
-								]
-							);
-						}
-
-						# Update the links tables
-						$updates = $content->getSecondaryDataUpdates(
-							$title, null, $forceRecursiveLinkUpdate, $p_result );
-						foreach ( $updates as $update ) {
-							$update->setCause( 'api-purge', $this->getUser()->getName() );
-							DeferredUpdates::addUpdate( $update, DeferredUpdates::PRESEND );
-						}
-
-						$r['linkupdate'] = true;
-
-						if ( $enableParserCache ) {
-							$pcache = MediaWikiServices::getInstance()->getParserCache();
-							$pcache->save( $p_result, $page, $popts );
-						}
 					}
+
+					$page->updateParserCache( [
+						'causeAction' => 'api-purge',
+						'causeAgent' => $this->getUser()->getName(),
+					] );
+					$page->doSecondaryDataUpdates( [
+						'recursive' => $forceRecursiveLinkUpdate,
+						'causeAction' => 'api-purge',
+						'causeAgent' => $this->getUser()->getName(),
+						'defer' => DeferredUpdates::PRESEND,
+					] );
+					$r['linkupdate'] = true;
 				} else {
 					$this->addWarning( 'apierror-ratelimited' );
 					$forceLinkUpdate = false;
@@ -132,7 +114,7 @@ class ApiPurge extends ApiBase {
 	 * @return ApiPageSet
 	 */
 	private function getPageSet() {
-		if ( !isset( $this->mPageSet ) ) {
+		if ( $this->mPageSet === null ) {
 			$this->mPageSet = new ApiPageSet( $this );
 		}
 

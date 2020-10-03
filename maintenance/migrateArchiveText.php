@@ -21,10 +21,12 @@
  * @ingroup Maintenance
  */
 
+use MediaWiki\MediaWikiServices;
+
 require_once __DIR__ . '/Maintenance.php';
 
 /**
- * Maintenance script that migrates archive.ar_text and ar_flags to modern storage
+ * Maintenance script that migrates archive.ar_text and ar_flags to text storage
  *
  * @ingroup Maintenance
  * @since 1.31
@@ -33,7 +35,7 @@ class MigrateArchiveText extends LoggedUpdateMaintenance {
 	public function __construct() {
 		parent::__construct();
 		$this->addDescription(
-			'Migrates comments from pre-1.5 ar_text and ar_flags columns to modern storage'
+			'Migrates content from pre-1.5 ar_text and ar_flags columns to text storage'
 		);
 		$this->addOption(
 			'replace-missing',
@@ -55,9 +57,11 @@ class MigrateArchiveText extends LoggedUpdateMaintenance {
 	}
 
 	protected function doDBUpdates() {
-		global $wgDefaultExternalStore;
-
 		$replaceMissing = $this->hasOption( 'replace-missing' );
+		$defaultExternalStore = $this->getConfig()->get( 'DefaultExternalStore' );
+		$blobStore = MediaWikiServices::getInstance()
+			->getBlobStoreFactory()
+			->newSqlBlobStore();
 		$batchSize = $this->getBatchSize();
 
 		$dbr = $this->getDB( DB_REPLICA, [ 'vslow' ] );
@@ -91,16 +95,14 @@ class MigrateArchiveText extends LoggedUpdateMaintenance {
 
 				// Recompress the text (and store in external storage, if
 				// applicable) if it's not already in external storage.
-				if ( !in_array( 'external', explode( ',', $row->ar_flags ), true ) ) {
-					$data = Revision::getRevisionText( $row, 'ar_' );
+				$arFlags = explode( ',', $row->ar_flags );
+				if ( !in_array( 'external', $arFlags, true ) ) {
+					$data = $blobStore->decompressData( $row->ar_text, $arFlags );
 					if ( $data !== false ) {
-						$flags = Revision::compressRevisionText( $data );
+						$flags = $blobStore->compressData( $data );
 
-						if ( $wgDefaultExternalStore ) {
+						if ( $defaultExternalStore ) {
 							$data = ExternalStore::insertToDefault( $data );
-							if ( !$data ) {
-								throw new MWException( "Unable to store text to external storage" );
-							}
 							if ( $flags ) {
 								$flags .= ',';
 							}

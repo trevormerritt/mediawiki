@@ -26,6 +26,7 @@ use MediaWiki\ShellDisabledError;
 use Profiler;
 use Psr\Log\LoggerAwareTrait;
 use Psr\Log\NullLogger;
+use Wikimedia\AtEase\AtEase;
 
 /**
  * Class used for executing shell commands
@@ -56,8 +57,8 @@ class Command {
 	/** @var string */
 	private $method;
 
-	/** @var string|null */
-	private $inputString;
+	/** @var string */
+	private $inputString = '';
 
 	/** @var bool */
 	private $doIncludeStderr = false;
@@ -66,20 +67,26 @@ class Command {
 	private $doLogStderr = false;
 
 	/** @var bool */
+	private $doPassStdin = false;
+
+	/** @var bool */
+	private $doPassStderr = false;
+
+	/** @var bool */
 	private $everExecuted = false;
 
 	/** @var string|false */
 	private $cgroup = false;
 
 	/**
-	 * bitfield with restrictions
+	 * Bitfield with restrictions
 	 *
 	 * @var int
 	 */
 	protected $restrictions = 0;
 
 	/**
-	 * Constructor. Don't call directly, instead use Shell::command()
+	 * Don't call directly, instead use Shell::command()
 	 *
 	 * @throws ShellDisabledError
 	 */
@@ -92,7 +99,7 @@ class Command {
 	}
 
 	/**
-	 * Destructor. Makes sure programmer didn't forget to execute the command after all
+	 * Makes sure the programmer didn't forget to execute the command after all
 	 */
 	public function __destruct() {
 		if ( !$this->everExecuted ) {
@@ -111,11 +118,10 @@ class Command {
 	 * Adds parameters to the command. All parameters are sanitized via Shell::escape().
 	 * Null values are ignored.
 	 *
-	 * @param string|string[] $args,...
+	 * @param string|string[] ...$args
 	 * @return $this
 	 */
-	public function params( /* ... */ ) {
-		$args = func_get_args();
+	public function params( ...$args ): Command {
 		if ( count( $args ) === 1 && is_array( reset( $args ) ) ) {
 			// If only one argument has been passed, and that argument is an array,
 			// treat it as a list of arguments
@@ -130,11 +136,10 @@ class Command {
 	 * Adds unsafe parameters to the command. These parameters are NOT sanitized in any way.
 	 * Null values are ignored.
 	 *
-	 * @param string|string[] $args,...
+	 * @param string|string[] ...$args
 	 * @return $this
 	 */
-	public function unsafeParams( /* ... */ ) {
-		$args = func_get_args();
+	public function unsafeParams( ...$args ): Command {
 		if ( count( $args ) === 1 && is_array( reset( $args ) ) ) {
 			// If only one argument has been passed, and that argument is an array,
 			// treat it as a list of arguments
@@ -157,7 +162,7 @@ class Command {
 	 *   filesize (for ulimit -f), memory, time, walltime.
 	 * @return $this
 	 */
-	public function limits( array $limits ) {
+	public function limits( array $limits ): Command {
 		if ( !isset( $limits['walltime'] ) && isset( $limits['time'] ) ) {
 			// Emulate the behavior of old wfShellExec() where walltime fell back on time
 			// if the latter was overridden and the former wasn't
@@ -174,7 +179,7 @@ class Command {
 	 * @param string[] $env array of variable name => value
 	 * @return $this
 	 */
-	public function environment( array $env ) {
+	public function environment( array $env ): Command {
 		$this->env = $env;
 
 		return $this;
@@ -186,20 +191,54 @@ class Command {
 	 * @param string $method
 	 * @return $this
 	 */
-	public function profileMethod( $method ) {
+	public function profileMethod( string $method ): Command {
 		$this->method = $method;
 
 		return $this;
 	}
 
 	/**
-	 * Sends the provided input to the command.
-	 * When set to null (default), the command will use the standard input.
-	 * @param string|null $inputString
+	 * Sends the provided input to the command. Defaults to an empty string.
+	 * If you want to pass stdin through to the command instead, use
+	 * passStdin().
+	 *
+	 * @param string $inputString
 	 * @return $this
 	 */
-	public function input( $inputString ) {
-		$this->inputString = is_null( $inputString ) ? null : (string)$inputString;
+	public function input( string $inputString ): Command {
+		$this->inputString = $inputString;
+
+		return $this;
+	}
+
+	/**
+	 * Controls whether stdin is passed through to the command, so that the
+	 * user can interact with the command when it is run in CLI mode. If this
+	 * is enabled:
+	 *   - The wall clock timeout will be disabled to avoid stopping the
+	 *     process with SIGTTIN/SIGTTOU (T206957).
+	 *   - The string specified with input() will be ignored.
+	 *
+	 * @param bool $yesno
+	 * @return $this
+	 */
+	public function passStdin( bool $yesno = true ): Command {
+		$this->doPassStdin = $yesno;
+
+		return $this;
+	}
+
+	/**
+	 * If this is set to true, text written to stderr by the command will be
+	 * passed through to PHP's stderr. To avoid SIGTTIN/SIGTTOU, and to support
+	 * Result::getStderr(), the file descriptor is not passed through, we just
+	 * copy the data to stderr as we receive it.
+	 *
+	 * @param bool $yesno
+	 * @return $this
+	 */
+	public function forwardStderr( bool $yesno = true ): Command {
+		$this->doPassStderr = $yesno;
 
 		return $this;
 	}
@@ -211,7 +250,7 @@ class Command {
 	 * @param bool $yesno
 	 * @return $this
 	 */
-	public function includeStderr( $yesno = true ) {
+	public function includeStderr( bool $yesno = true ): Command {
 		$this->doIncludeStderr = $yesno;
 
 		return $this;
@@ -223,7 +262,7 @@ class Command {
 	 * @param bool $yesno
 	 * @return $this
 	 */
-	public function logStderr( $yesno = true ) {
+	public function logStderr( bool $yesno = true ): Command {
 		$this->doLogStderr = $yesno;
 
 		return $this;
@@ -235,21 +274,36 @@ class Command {
 	 * @param string|false $cgroup Absolute file path to the cgroup, or false to not use a cgroup
 	 * @return $this
 	 */
-	public function cgroup( $cgroup ) {
+	public function cgroup( $cgroup ): Command {
 		$this->cgroup = $cgroup;
 
 		return $this;
 	}
 
 	/**
-	 * Set additional restrictions for this request
+	 * Set restrictions for this request, overwriting any previously set restrictions.
+	 *
+	 * Add the "no network" restriction:
+	 * @code
+	 * 	$command->restrict( Shell::RESTRICT_DEFAULT | Shell::NO_NETWORK );
+	 * @endcode
+	 *
+	 * Allow LocalSettings.php access:
+	 * @code
+	 * 	$command->restrict( Shell::RESTRICT_DEFAULT & ~Shell::NO_LOCALSETTINGS );
+	 * @endcode
+	 *
+	 * Disable all restrictions:
+	 * @code
+	 *  $command->restrict( Shell::RESTRICT_NONE );
+	 * @endcode
 	 *
 	 * @since 1.31
 	 * @param int $restrictions
 	 * @return $this
 	 */
-	public function restrict( $restrictions ) {
-		$this->restrictions |= $restrictions;
+	public function restrict( int $restrictions ): Command {
+		$this->restrictions = $restrictions;
 
 		return $this;
 	}
@@ -261,7 +315,7 @@ class Command {
 	 *
 	 * @return bool
 	 */
-	protected function hasRestriction( $restriction ) {
+	protected function hasRestriction( int $restriction ): bool {
 		return ( $this->restrictions & $restriction ) === $restriction;
 	}
 
@@ -275,7 +329,7 @@ class Command {
 	 *
 	 * @return $this
 	 */
-	public function whitelistPaths( array $paths ) {
+	public function whitelistPaths( array $paths ): Command {
 		// Default implementation is a no-op
 		return $this;
 	}
@@ -287,7 +341,7 @@ class Command {
 	 * @param string $command Already-escaped command to run
 	 * @return array [ command, whether to use log pipe ]
 	 */
-	protected function buildFinalCommand( $command ) {
+	protected function buildFinalCommand( string $command ): array {
 		$envcmd = '';
 		foreach ( $this->env as $k => $v ) {
 			if ( wfIsWindows() ) {
@@ -311,7 +365,7 @@ class Command {
 
 		if ( is_executable( '/bin/bash' ) ) {
 			$time = intval( $this->limits['time'] );
-			$wallTime = intval( $this->limits['walltime'] );
+			$wallTime = $this->doPassStdin ? 0 : intval( $this->limits['walltime'] );
 			$mem = intval( $this->limits['memory'] );
 			$filesize = intval( $this->limits['filesize'] );
 
@@ -334,6 +388,10 @@ class Command {
 			$cmd .= ' 2>&1';
 		}
 
+		if ( wfIsWindows() ) {
+			$cmd = 'cmd.exe /c "' . $cmd . '"';
+		}
+
 		return [ $cmd, $useLogPipe ];
 	}
 
@@ -346,7 +404,7 @@ class Command {
 	 * @throws ProcOpenError
 	 * @throws ShellDisabledError
 	 */
-	public function execute() {
+	public function execute(): Result {
 		$this->everExecuted = true;
 
 		$profileMethod = $this->method ?: wfGetCaller();
@@ -365,7 +423,7 @@ class Command {
 		}
 
 		$desc = [
-			0 => $this->inputString === null ? [ 'file', 'php://stdin', 'r' ] : [ 'pipe', 'r' ],
+			0 => $this->doPassStdin ? [ 'file', 'php://stdin', 'r' ] : [ 'pipe', 'r' ],
 			1 => [ 'pipe', 'w' ],
 			2 => [ 'pipe', 'w' ],
 		];
@@ -374,7 +432,16 @@ class Command {
 		}
 		$pipes = null;
 		$scoped = Profiler::instance()->scopedProfileIn( __FUNCTION__ . '-' . $profileMethod );
-		$proc = proc_open( $cmd, $desc, $pipes );
+		$proc = null;
+
+		if ( wfIsWindows() ) {
+			// Windows Shell bypassed, but command run is "cmd.exe /C "{$cmd}"
+			// This solves some shell parsing issues, see T207248
+			$proc = proc_open( $cmd, $desc, $pipes, null, null, [ 'bypass_shell' => true ] );
+		} else {
+			$proc = proc_open( $cmd, $desc, $pipes );
+		}
+
 		if ( !$proc ) {
 			$this->logger->error( "proc_open() failed: {command}", [ 'command' => $cmd ] );
 			throw new ProcOpenError();
@@ -428,26 +495,20 @@ class Command {
 				}
 			}
 
-			// clear get_last_error without actually raising an error
-			// from http://php.net/manual/en/function.error-get-last.php#113518
-			// TODO replace with clear_last_error when requirements are bumped to PHP7
-			set_error_handler( function () {
-			}, 0 );
-			// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
-			@trigger_error( '' );
-			restore_error_handler();
+			error_clear_last();
 
-			$readPipes = wfArrayFilterByKey( $pipes, function ( $fd ) use ( $desc ) {
+			$readPipes = array_filter( $pipes, function ( $fd ) use ( $desc ) {
 				return $desc[$fd][0] === 'pipe' && $desc[$fd][1] === 'r';
-			} );
-			$writePipes = wfArrayFilterByKey( $pipes, function ( $fd ) use ( $desc ) {
+			}, ARRAY_FILTER_USE_KEY );
+			$writePipes = array_filter( $pipes, function ( $fd ) use ( $desc ) {
 				return $desc[$fd][0] === 'pipe' && $desc[$fd][1] === 'w';
-			} );
+			}, ARRAY_FILTER_USE_KEY );
 			// stream_select parameter names are from the POV of us being able to do the operation;
 			// proc_open desriptor types are from the POV of the process doing it.
 			// So $writePipes is passed as the $read parameter and $readPipes as $write.
-			// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
-			$numReadyPipes = @stream_select( $writePipes, $readPipes, $emptyArray, $timeout );
+			AtEase::suppressWarnings();
+			$numReadyPipes = stream_select( $writePipes, $readPipes, $emptyArray, $timeout );
+			AtEase::restoreWarnings();
 			if ( $numReadyPipes === false ) {
 				$error = error_get_last();
 				if ( strncmp( $error['message'], $eintrMessage, strlen( $eintrMessage ) ) == 0 ) {
@@ -501,6 +562,9 @@ class Command {
 							$this->logger->info( $line );
 						}
 					}
+					if ( $fd === 2 && $this->doPassStderr ) {
+						fwrite( STDERR, $res );
+					}
 				}
 			}
 		}
@@ -541,6 +605,7 @@ class Command {
 			$this->logger->warning( "$logMsg: {command}", [ 'command' => $cmd ] );
 		}
 
+		// @phan-suppress-next-line PhanImpossibleCondition
 		if ( $buffers[2] && $this->doLogStderr ) {
 			$this->logger->error( "Error running {command}: {error}", [
 				'command' => $cmd,
@@ -551,5 +616,16 @@ class Command {
 		}
 
 		return new Result( $retval, $buffers[1], $buffers[2] );
+	}
+
+	/**
+	 * Returns the final command line before environment/limiting, etc are applied.
+	 * Use string conversion only for debugging, don't try to pass this to
+	 * some other execution medium.
+	 *
+	 * @return string
+	 */
+	public function __toString(): string {
+		return "#Command: {$this->command}";
 	}
 }

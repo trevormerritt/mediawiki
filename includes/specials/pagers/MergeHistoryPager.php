@@ -19,6 +19,9 @@
  * @ingroup Pager
  */
 
+use MediaWiki\Cache\LinkBatchFactory;
+use MediaWiki\MediaWikiServices;
+
 /**
  * @ingroup Pager
  */
@@ -30,10 +33,24 @@ class MergeHistoryPager extends ReverseChronologicalPager {
 	/** @var array */
 	public $mConds;
 
-	function __construct( SpecialMergeHistory $form, $conds, Title $source, Title $dest ) {
+	/** @var int */
+	private $articleID;
+
+	/** @var int */
+	private $maxTimestamp;
+
+	/** @var LinkBatchFactory */
+	private $linkBatchFactory;
+
+	public function __construct(
+		SpecialMergeHistory $form,
+		$conds,
+		Title $source,
+		Title $dest,
+		LinkBatchFactory $linkBatchFactory = null
+	) {
 		$this->mForm = $form;
 		$this->mConds = $conds;
-		$this->title = $source;
 		$this->articleID = $source->getArticleID();
 
 		$dbr = wfGetDB( DB_REPLICA );
@@ -46,12 +63,13 @@ class MergeHistoryPager extends ReverseChronologicalPager {
 		$this->maxTimestamp = $maxtimestamp;
 
 		parent::__construct( $form->getContext() );
+		$this->linkBatchFactory = $linkBatchFactory ?? MediaWikiServices::getInstance()->getLinkBatchFactory();
 	}
 
-	function getStartBody() {
+	protected function getStartBody() {
 		# Do a link batch query
 		$this->mResult->seek( 0 );
-		$batch = new LinkBatch();
+		$batch = $this->linkBatchFactory->newLinkBatch();
 		# Give some pointers to make (last) links
 		$this->mForm->prevId = [];
 		$rev_id = null;
@@ -76,16 +94,20 @@ class MergeHistoryPager extends ReverseChronologicalPager {
 		return '';
 	}
 
-	function formatRow( $row ) {
+	public function formatRow( $row ) {
 		return $this->mForm->formatRevisionRow( $row );
 	}
 
-	function getQueryInfo() {
+	public function getQueryInfo() {
 		$conds = $this->mConds;
 		$conds['rev_page'] = $this->articleID;
 		$conds[] = "rev_timestamp < " . $this->mDb->addQuotes( $this->maxTimestamp );
 
-		$revQuery = Revision::getQueryInfo( [ 'page', 'user' ] );
+		// TODO inject a RevisionStore into SpecialMergeHistory and pass it to
+		// the MergeHistoryPager constructor
+		$revQuery = MediaWikiServices::getInstance()
+			->getRevisionStore()
+			->getQueryInfo( [ 'page', 'user' ] );
 		return [
 			'tables' => $revQuery['tables'],
 			'fields' => $revQuery['fields'],
@@ -94,7 +116,7 @@ class MergeHistoryPager extends ReverseChronologicalPager {
 		];
 	}
 
-	function getIndexField() {
+	public function getIndexField() {
 		return 'rev_timestamp';
 	}
 }

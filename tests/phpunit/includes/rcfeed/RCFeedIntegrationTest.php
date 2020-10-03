@@ -1,7 +1,7 @@
 <?php
 
 /**
- * @medium
+ * @group medium
  * @group Database
  * @covers FormattedRCFeed
  * @covers RecentChange
@@ -9,15 +9,15 @@
  * @covers MachineReadableRCFeedFormatter
  * @covers RCFeed
  */
-class RCFeedIntegrationTest extends MediaWikiTestCase {
-	protected function setUp() {
+class RCFeedIntegrationTest extends MediaWikiIntegrationTestCase {
+	protected function setUp() : void {
 		parent::setUp();
 		$this->setMwGlobals( [
 			'wgCanonicalServer' => 'https://example.org',
 			'wgServerName' => 'example.org',
 			'wgScriptPath' => '/w',
 			'wgDBname' => 'example',
-			'wgDBprefix' => '',
+			'wgDBprefix' => $this->dbPrefix(),
 			'wgRCFeeds' => [],
 			'wgRCEngines' => [],
 		] );
@@ -57,7 +57,7 @@ class RCFeedIntegrationTest extends MediaWikiTestCase {
 						'server_url' => 'https://example.org',
 						'server_name' => 'example.org',
 						'server_script_path' => '/w',
-						'wiki' => 'example',
+						'wiki' => 'example-' . $this->dbPrefix(),
 					] ),
 					$line
 				);

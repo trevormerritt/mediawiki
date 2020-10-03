@@ -22,9 +22,6 @@
 
 namespace MediaWiki;
 
-use MWTidy;
-use Html;
-
 /**
  * @since 1.31
  */
@@ -36,30 +33,9 @@ class OutputHandler {
 	 * @return string
 	 */
 	public static function handle( $s ) {
-		global $wgDisableOutputCompression, $wgValidateAllHtml, $wgMangleFlashPolicy;
+		global $wgDisableOutputCompression, $wgMangleFlashPolicy;
 		if ( $wgMangleFlashPolicy ) {
 			$s = self::mangleFlashPolicy( $s );
-		}
-		if ( $wgValidateAllHtml ) {
-			$headers = headers_list();
-			$isHTML = false;
-			foreach ( $headers as $header ) {
-				$parts = explode( ':', $header, 2 );
-				if ( count( $parts ) !== 2 ) {
-					continue;
-				}
-				$name = strtolower( trim( $parts[0] ) );
-				$value = trim( $parts[1] );
-				if ( $name == 'content-type' && ( strpos( $value, 'text/html' ) === 0
-					|| strpos( $value, 'application/xhtml+xml' ) === 0 )
-				) {
-					$isHTML = true;
-					break;
-				}
-			}
-			if ( $isHTML ) {
-				$s = self::validateAllHtml( $s );
-			}
 		}
 		if ( !$wgDisableOutputCompression && !ini_get( 'zlib.output_compression' ) ) {
 			if ( !defined( 'MW_NO_OUTPUT_COMPRESSION' ) ) {
@@ -86,7 +62,7 @@ class OutputHandler {
 		/// @todo FIXME: this sort of dupes some code in WebRequest::getRequestUrl()
 		if ( isset( $_SERVER['REQUEST_URI'] ) ) {
 			// Strip the query string...
-			list( $path ) = explode( '?', $_SERVER['REQUEST_URI'], 2 );
+			$path = explode( '?', $_SERVER['REQUEST_URI'], 2 )[0];
 		} elseif ( isset( $_SERVER['SCRIPT_NAME'] ) ) {
 			// Probably IIS. QUERY_STRING appears separately.
 			$path = $_SERVER['SCRIPT_NAME'];
@@ -112,11 +88,11 @@ class OutputHandler {
 	 */
 	private static function handleGzip( $s ) {
 		if ( !function_exists( 'gzencode' ) ) {
-			wfDebug( __METHOD__ . "() skipping compression (gzencode unavailable)\n" );
+			wfDebug( __METHOD__ . "() skipping compression (gzencode unavailable)" );
 			return $s;
 		}
 		if ( headers_sent() ) {
-			wfDebug( __METHOD__ . "() skipping compression (headers already sent)\n" );
+			wfDebug( __METHOD__ . "() skipping compression (headers already sent)" );
 			return $s;
 		}
 
@@ -130,7 +106,7 @@ class OutputHandler {
 		}
 
 		if ( wfClientAcceptsGzip() ) {
-			wfDebug( __METHOD__ . "() is compressing output\n" );
+			wfDebug( __METHOD__ . "() is compressing output" );
 			header( 'Content-Encoding: gzip' );
 			$s = gzencode( $s, 6 );
 		}
@@ -147,10 +123,6 @@ class OutputHandler {
 		}
 		if ( !$foundVary ) {
 			header( 'Vary: Accept-Encoding' );
-			global $wgUseKeyHeader;
-			if ( $wgUseKeyHeader ) {
-				header( 'Key: Accept-Encoding;match=gzip' );
-			}
 		}
 		return $s;
 	}
@@ -182,66 +154,5 @@ class OutputHandler {
 		) {
 			header( "Content-Length: $length" );
 		}
-	}
-
-	/**
-	 * Replace the output with an error if the HTML is not valid.
-	 *
-	 * @param string $s
-	 * @return string
-	 */
-	private static function validateAllHtml( $s ) {
-		$errors = '';
-		if ( MWTidy::checkErrors( $s, $errors ) ) {
-			return $s;
-		}
-
-		header( 'Cache-Control: no-cache' );
-
-		$out = Html::element( 'h1', null, 'HTML validation error' );
-		$out .= Html::openElement( 'ul' );
-
-		$error = strtok( $errors, "\n" );
-		$badLines = [];
-		while ( $error !== false ) {
-			if ( preg_match( '/^line (\d+)/', $error, $m ) ) {
-				$lineNum = intval( $m[1] );
-				$badLines[$lineNum] = true;
-				$out .= Html::rawElement( 'li', null,
-					Html::element( 'a', [ 'href' => "#line-{$lineNum}" ], $error ) ) . "\n";
-			}
-			$error = strtok( "\n" );
-		}
-
-		$out .= Html::closeElement( 'ul' );
-		$out .= Html::element( 'pre', null, $errors );
-		$out .= Html::openElement( 'ol' ) . "\n";
-		$line = strtok( $s, "\n" );
-		$i = 1;
-		while ( $line !== false ) {
-			$attrs = [];
-			if ( isset( $badLines[$i] ) ) {
-				$attrs['class'] = 'highlight';
-				$attrs['id'] = "line-$i";
-			}
-			$out .= Html::element( 'li', $attrs, $line ) . "\n";
-			$line = strtok( "\n" );
-			$i++;
-		}
-		$out .= Html::closeElement( 'ol' );
-
-		$style = <<<CSS
-	.highlight { background-color: #ffc }
-	li { white-space: pre }
-CSS;
-
-		$out = Html::htmlHeader( [ 'lang' => 'en', 'dir' => 'ltr' ] ) .
-			Html::rawElement( 'head', null,
-				Html::element( 'title', null, 'HTML validation error' ) .
-				Html::inlineStyle( $style ) ) .
-			Html::rawElement( 'body', null, $out ) .
-			Html::closeElement( 'html' );
-
-		return $out;
 	}
 }

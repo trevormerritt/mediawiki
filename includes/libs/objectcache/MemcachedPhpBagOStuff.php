@@ -27,10 +27,12 @@
  * @ingroup Cache
  */
 class MemcachedPhpBagOStuff extends MemcachedBagOStuff {
+	/** @var MemcachedClient */
+	protected $client;
+
 	/**
 	 * Available parameters are:
 	 *   - servers:             The list of IP:port combinations holding the memcached servers.
-	 *   - debug:               Whether to set the debug flag in the underlying client.
 	 *   - persistent:          Whether to use a persistent connection
 	 *   - compress_threshold:  The minimum size an object must be before it is compressed
 	 *   - timeout:             The read timeout in microseconds
@@ -38,36 +40,101 @@ class MemcachedPhpBagOStuff extends MemcachedBagOStuff {
 	 *
 	 * @param array $params
 	 */
-	function __construct( $params ) {
+	public function __construct( $params ) {
 		parent::__construct( $params );
-		$params = $this->applyDefaultParams( $params );
+
+		// Default class-specific parameters
+		$params += [
+			'compress_threshold' => 1500,
+			'connect_timeout' => 0.5
+		];
 
 		$this->client = new MemcachedClient( $params );
 		$this->client->set_servers( $params['servers'] );
-		$this->client->set_debug( $params['debug'] );
 	}
 
-	public function setDebug( $debug ) {
-		$this->client->set_debug( $debug );
+	public function setDebug( $enabled ) {
+		parent::debug( $enabled );
+		$this->client->set_debug( $enabled );
 	}
 
-	public function getMulti( array $keys, $flags = 0 ) {
+	protected function doGet( $key, $flags = 0, &$casToken = null ) {
+		$getToken = ( $casToken === self::PASS_BY_REF );
+		$casToken = null;
+
+		$routeKey = $this->validateKeyAndPrependRoute( $key );
+
+		// T257003: only require "gets" (instead of "get") when a CAS token is needed
+		return $getToken
+			? $this->client->get( $routeKey, $casToken )
+			: $this->client->get( $routeKey );
+	}
+
+	protected function doSet( $key, $value, $exptime = 0, $flags = 0 ) {
+		$routeKey = $this->validateKeyAndPrependRoute( $key );
+
+		return $this->client->set( $routeKey, $value, $this->fixExpiry( $exptime ) );
+	}
+
+	protected function doDelete( $key, $flags = 0 ) {
+		$routeKey = $this->validateKeyAndPrependRoute( $key );
+
+		return $this->client->delete( $routeKey );
+	}
+
+	protected function doAdd( $key, $value, $exptime = 0, $flags = 0 ) {
+		$routeKey = $this->validateKeyAndPrependRoute( $key );
+
+		return $this->client->add( $routeKey, $value, $this->fixExpiry( $exptime ) );
+	}
+
+	protected function doCas( $casToken, $key, $value, $exptime = 0, $flags = 0 ) {
+		$routeKey = $this->validateKeyAndPrependRoute( $key );
+
+		return $this->client->cas( $casToken, $routeKey, $value, $this->fixExpiry( $exptime ) );
+	}
+
+	public function incr( $key, $value = 1, $flags = 0 ) {
+		$routeKey = $this->validateKeyAndPrependRoute( $key );
+		$n = $this->client->incr( $routeKey, $value );
+
+		return ( $n !== false && $n !== null ) ? $n : false;
+	}
+
+	public function decr( $key, $value = 1, $flags = 0 ) {
+		$routeKey = $this->validateKeyAndPrependRoute( $key );
+		$n = $this->client->decr( $routeKey, $value );
+
+		return ( $n !== false && $n !== null ) ? $n : false;
+	}
+
+	protected function doChangeTTL( $key, $exptime, $flags ) {
+		$routeKey = $this->validateKeyAndPrependRoute( $key );
+
+		return $this->client->touch( $routeKey, $this->fixExpiry( $exptime ) );
+	}
+
+	protected function doGetMulti( array $keys, $flags = 0 ) {
+		$routeKeys = [];
 		foreach ( $keys as $key ) {
-			$this->validateKeyEncoding( $key );
+			$routeKeys[] = $this->validateKeyAndPrependRoute( $key );
 		}
 
-		return $this->client->get_multi( $keys );
+		$resByRouteKey = $this->client->get_multi( $routeKeys );
+
+		$res = [];
+		foreach ( $resByRouteKey as $routeKey => $value ) {
+			$res[$this->stripRouteFromKey( $routeKey )] = $value;
+		}
+
+		return $res;
 	}
 
-	public function incr( $key, $value = 1 ) {
-		$this->validateKeyEncoding( $key );
-
-		return $this->client->incr( $key, $value );
+	protected function serialize( $value ) {
+		return is_int( $value ) ? $value : $this->client->serialize( $value );
 	}
 
-	public function decr( $key, $value = 1 ) {
-		$this->validateKeyEncoding( $key );
-
-		return $this->client->decr( $key, $value );
+	protected function unserialize( $value ) {
+		return $this->isInteger( $value ) ? (int)$value : $this->client->unserialize( $value );
 	}
 }

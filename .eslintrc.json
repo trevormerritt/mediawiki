@@ -1,16 +1,17 @@
 {
-	"extends": "wikimedia",
-	"env": {
-		"browser": true,
-		"jquery": true
-	},
+	"extends": [
+		"wikimedia/client",
+		"wikimedia/jquery",
+		"wikimedia/mediawiki",
+		"wikimedia/jsduck"
+	],
 	"globals": {
-		"require": false,
-		"module": false,
-		"mediaWiki": false,
-		"OO": false
+		"require": "readonly",
+		"module": "readonly"
 	},
 	"rules": {
-		"dot-notation": 0
+		"max-len": "off",
+		"no-jquery/no-global-selector": "off",
+		"no-shadow": "error"
 	}
 }

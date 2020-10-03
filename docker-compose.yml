@@ -1,0 +1,34 @@
+# Please see DEVELOPERS.md for help
+#
+# Contributions to this file are welcome but please note that this file is
+# minimal by design, with the idea to make it easily extensible via
+# docker-compose.override.yml. For help with doing that, please see
+# DEVELOPERS.md
+version: '3.7'
+services:
+  mediawiki:
+    image: docker-registry.wikimedia.org/dev/stretch-php72-fpm-apache2-xdebug:0.6.1
+    working_dir: '/var/www/html/w'
+    ports:
+      - "${MW_DOCKER_PORT:-8080}:8080"
+    volumes:
+      - ./:/var/www/html/w:cached
+    environment:
+      COMPOSER_CACHE_DIR: '/var/www/html/w/cache/composer'
+      MW_SERVER: 'http://localhost:${MW_DOCKER_PORT:-8080}'
+      MW_SCRIPT_PATH: '/w'
+      MW_DBPATH: '/var/www/html/w/cache/sqlite'
+      MW_DBTYPE: 'sqlite'
+      MW_LANG: 'en'
+      MW_USER: 'admin'
+      MW_PASS: 'dockerpass'
+      MW_SITENAME: 'MediaWiki'
+      MW_LOG_DIR: /var/www/html/w/cache
+      XDEBUG_CONFIG: ${XDEBUG_CONFIG}
+  mediawiki-jobrunner:
+    image: docker-registry.wikimedia.org/dev/stretch-php72-jobrunner:0.1.0
+    volumes:
+      - ./:/var/www/html/w:cached
+    environment:
+      MW_LOG_DIR: /var/www/html/w/cache
+      MW_INSTALL_PATH: /var/www/html/w

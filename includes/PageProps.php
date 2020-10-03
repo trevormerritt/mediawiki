@@ -19,6 +19,10 @@
  *
  * @file
  */
+
+use MediaWiki\Cache\LinkBatchFactory;
+use MediaWiki\MediaWikiServices;
+use Wikimedia\Rdbms\ILoadBalancer;
 use Wikimedia\ScopedCallback;
 
 /**
@@ -28,35 +32,47 @@ use Wikimedia\ScopedCallback;
  */
 class PageProps {
 
-	/**
-	 * @var PageProps
-	 */
-	private static $instance;
+	/** @var LinkBatchFactory */
+	private $linkBatchFactory;
+
+	/** @var ILoadBalancer */
+	private $loadBalancer;
+
+	/** Cache parameters */
+	private const CACHE_TTL = 10; // integer; TTL in seconds
+	private const CACHE_SIZE = 100; // integer; max cached pages
+
+	/** @var MapCacheLRU */
+	private $cache = null;
 
 	/**
 	 * Overrides the default instance of this class
 	 * This is intended for use while testing and will fail if MW_PHPUNIT_TEST is not defined.
 	 *
-	 * If this method is used it MUST also be called with null after a test to ensure a new
-	 * default instance is created next time getInstance is called.
-	 *
 	 * @since 1.27
+	 * @deprecated since 1.36
 	 *
-	 * @param PageProps|null $store
+	 * @param PageProps $store
 	 *
 	 * @return ScopedCallback to reset the overridden value
 	 * @throws MWException
 	 */
-	public static function overrideInstance( PageProps $store = null ) {
+	public static function overrideInstance( PageProps $store ) {
 		if ( !defined( 'MW_PHPUNIT_TEST' ) ) {
 			throw new MWException(
 				'Cannot override ' . __CLASS__ . 'default instance in operation.'
 			);
 		}
-		$previousValue = self::$instance;
-		self::$instance = $store;
-		return new ScopedCallback( function () use ( $previousValue ) {
-			self::$instance = $previousValue;
+
+		MediaWikiServices::getInstance()->redefineService(
+			'PageProps',
+			function () use ( $store ) {
+				return $store;
+			}
+		);
+
+		return new ScopedCallback( function () {
+			MediaWikiServices::getInstance()->resetServiceForTesting( 'PageProps' );
 		} );
 	}
 
@@ -64,24 +80,20 @@ class PageProps {
 	 * @return PageProps
 	 */
 	public static function getInstance() {
-		if ( self::$instance === null ) {
-			self::$instance = new self();
-		}
-		return self::$instance;
+		return MediaWikiServices::getInstance()->getPageProps();
 	}
 
-	/** Cache parameters */
-	const CACHE_TTL = 10; // integer; TTL in seconds
-	const CACHE_SIZE = 100; // integer; max cached pages
-
-	/** Property cache */
-	private $cache = null;
-
 	/**
-	 * Create a PageProps object
+	 * @param LinkBatchFactory $linkBatchFactory
+	 * @param ILoadBalancer $loadBalancer
 	 */
-	private function __construct() {
-		$this->cache = new ProcessCacheLRU( self::CACHE_SIZE );
+	public function __construct(
+		LinkBatchFactory $linkBatchFactory,
+		ILoadBalancer $loadBalancer
+	) {
+		$this->linkBatchFactory = $linkBatchFactory;
+		$this->loadBalancer = $loadBalancer;
+		$this->cache = new MapCacheLRU( self::CACHE_SIZE );
 	}
 
 	/**
@@ -89,8 +101,8 @@ class PageProps {
 	 * @param int $size
 	 */
 	public function ensureCacheSize( $size ) {
-		if ( $this->cache->getSize() < $size ) {
-			$this->cache->resize( $size );
+		if ( $this->cache->getMaxSize() < $size ) {
+			$this->cache->setMaxSize( $size );
 		}
 	}
 
@@ -108,7 +120,7 @@ class PageProps {
 	 * returned. An empty array will be returned if no matching properties
 	 * were found.
 	 *
-	 * @param Title[]|Title $titles
+	 * @param Title[]|TitleArray|Title $titles
 	 * @param string[]|string $propertyNames
 	 * @return array associative array mapping page ID to property value
 	 */
@@ -129,18 +141,16 @@ class PageProps {
 				if ( $propertyValue === false ) {
 					$queryIDs[] = $pageID;
 					break;
+				} elseif ( $gotArray ) {
+					$values[$pageID][$propertyName] = $propertyValue;
 				} else {
-					if ( $gotArray ) {
-						$values[$pageID][$propertyName] = $propertyValue;
-					} else {
-						$values[$pageID] = $propertyValue;
-					}
+					$values[$pageID] = $propertyValue;
 				}
 			}
 		}
 
 		if ( $queryIDs ) {
-			$dbr = wfGetDB( DB_REPLICA );
+			$dbr = $this->loadBalancer->getConnectionRef( DB_REPLICA );
 			$result = $dbr->select(
 				'page_props',
 				[
@@ -181,7 +191,7 @@ class PageProps {
 	 * will always be returned. An empty array will be returned if no
 	 * matching properties were found.
 	 *
-	 * @param Title[]|Title $titles
+	 * @param Title[]|TitleArray|Title $titles
 	 * @return array associative array mapping page ID to property value array
 	 */
 	public function getAllProperties( $titles ) {
@@ -198,7 +208,7 @@ class PageProps {
 		}
 
 		if ( $queryIDs != [] ) {
-			$dbr = wfGetDB( DB_REPLICA );
+			$dbr = $this->loadBalancer->getConnectionRef( DB_REPLICA );
 			$result = $dbr->select(
 				'page_props',
 				[
@@ -217,7 +227,8 @@ class PageProps {
 			foreach ( $result as $row ) {
 				$pageID = $row->pp_page;
 				if ( $currentPageID != $pageID ) {
-					if ( $pageProperties != [] ) {
+					if ( $pageProperties ) {
+						// @phan-suppress-next-line PhanTypeMismatchArgument False positive
 						$this->cacheProperties( $currentPageID, $pageProperties );
 						$values[$currentPageID] = $pageProperties;
 					}
@@ -236,13 +247,13 @@ class PageProps {
 	}
 
 	/**
-	 * @param Title[]|Title $titles
+	 * @param Title[]|TitleArray|Title $titles
 	 * @return array array of good page IDs
 	 */
 	private function getGoodIDs( $titles ) {
 		$result = [];
-		if ( is_array( $titles ) ) {
-			( new LinkBatch( $titles ) )->execute();
+		if ( is_iterable( $titles ) ) {
+			$this->linkBatchFactory->newLinkBatch( $titles )->execute();
 
 			foreach ( $titles as $title ) {
 				$pageID = $title->getArticleID();
@@ -267,11 +278,11 @@ class PageProps {
 	 * @return string|bool property value array or false if not found
 	 */
 	private function getCachedProperty( $pageID, $propertyName ) {
-		if ( $this->cache->has( $pageID, $propertyName, self::CACHE_TTL ) ) {
-			return $this->cache->get( $pageID, $propertyName );
+		if ( $this->cache->hasField( $pageID, $propertyName, self::CACHE_TTL ) ) {
+			return $this->cache->getField( $pageID, $propertyName );
 		}
-		if ( $this->cache->has( 0, $pageID, self::CACHE_TTL ) ) {
-			$pageProperties = $this->cache->get( 0, $pageID );
+		if ( $this->cache->hasField( 0, $pageID, self::CACHE_TTL ) ) {
+			$pageProperties = $this->cache->getField( 0, $pageID );
 			if ( isset( $pageProperties[$propertyName] ) ) {
 				return $pageProperties[$propertyName];
 			}
@@ -286,8 +297,8 @@ class PageProps {
 	 * @return string|bool property value array or false if not found
 	 */
 	private function getCachedProperties( $pageID ) {
-		if ( $this->cache->has( 0, $pageID, self::CACHE_TTL ) ) {
-			return $this->cache->get( 0, $pageID );
+		if ( $this->cache->hasField( 0, $pageID, self::CACHE_TTL ) ) {
+			return $this->cache->getField( 0, $pageID );
 		}
 		return false;
 	}
@@ -300,7 +311,7 @@ class PageProps {
 	 * @param mixed $propertyValue value of property
 	 */
 	private function cacheProperty( $pageID, $propertyName, $propertyValue ) {
-		$this->cache->set( $pageID, $propertyName, $propertyValue );
+		$this->cache->setField( $pageID, $propertyName, $propertyValue );
 	}
 
 	/**
@@ -311,6 +322,6 @@ class PageProps {
 	 */
 	private function cacheProperties( $pageID, $pageProperties ) {
 		$this->cache->clear( $pageID );
-		$this->cache->set( 0, $pageID, $pageProperties );
+		$this->cache->setField( 0, $pageID, $pageProperties );
 	}
 }

@@ -20,10 +20,14 @@ project.index
 ## Sublime
 sublime-*
 sftp-config.json
+## Visual Studio Code
+*.vscode/
 
 # MediaWiki install & usage
 /cache
+/docs/coverage
 /docs/js
+/docs/latex
 /images/[0-9a-f]
 /images/archive
 /images/cache
@@ -41,23 +45,26 @@ sftp-config.json
 /maintenance/.mweval_history
 /maintenance/.mwsql_history
 /maintenance/dev/data
-/AdminSettings.php
 /LocalSettings.php
-/StartProfiler.php
+/includes/PlatformSettings.php
 
 # Building & testing
 npm-debug.log
 node_modules/
+/resources/lib/.foreign
 /tests/phpunit/phpunit.phar
+.phpunit.result.cache
+/tests/phpunit/.phpunit.result.cache
+phpunit.xml
+/tests/selenium/log
+.eslintcache
+.api-testing.config.json
 
 # Composer
 /vendor
 /composer.lock
 /composer.local.json
 /composer.phar
-
-# MediaWiki UI documentation
-/docs/kss/static
 
 # Operating systems
 ## Mac OS X
@@ -69,6 +76,7 @@ Thumbs.db
 .buildpath
 .classpath
 .idea
+*.iml
 .metadata*
 .settings
 /favicon.ico
@@ -78,3 +86,7 @@ Thumbs.db
 /.htpasswd
 /tests/phan/issues
 *.rej
+
+# Docker
+docker-compose.override.yml
+.env

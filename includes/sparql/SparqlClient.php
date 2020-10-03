@@ -33,7 +33,7 @@ class SparqlClient {
 	/**
 	 * Limit on how long can be the query to be sent by GET.
 	 */
-	const MAX_GET_SIZE = 2048;
+	public const MAX_GET_SIZE = 2048;
 
 	/**
 	 * User agent for HTTP requests.
@@ -170,12 +170,12 @@ class SparqlClient {
 		$status = $request->execute();
 
 		if ( !$status->isOK() ) {
-			throw new SparqlException( "HTTP error: {$status->getWikiText()}" );
+			throw new SparqlException( 'HTTP error: ' . $status->getWikiText( false, false, 'en' ) );
 		}
 		$result = $request->getContent();
-		\MediaWiki\suppressWarnings();
+		\Wikimedia\suppressWarnings();
 		$data = json_decode( $result, true );
-		\MediaWiki\restoreWarnings();
+		\Wikimedia\restoreWarnings();
 		if ( $data === null || $data === false ) {
 			throw new SparqlException( "HTTP request failed, response:\n" .
 				substr( $result, 1024 ) );
@@ -190,7 +190,7 @@ class SparqlClient {
 	 * https://www.w3.org/TR/sparql11-results-json/
 	 *
 	 * @param array $data SPARQL result
-	 * @param bool  $rawData Whether to return only values or full data objects
+	 * @param bool $rawData Whether to return only values or full data objects
 	 *
 	 * @return array List of results, one row per element.
 	 */

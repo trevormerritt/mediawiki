@@ -20,6 +20,12 @@
  * @file
  */
 
+use MediaWiki\Block\BlockPermissionCheckerFactory;
+use MediaWiki\Block\DatabaseBlock;
+use MediaWiki\Block\UnblockUserFactory;
+use MediaWiki\ParamValidator\TypeDef\UserDef;
+use MediaWiki\Permissions\PermissionManager;
+
 /**
  * API module that facilitates the unblocking of users. Requires API write mode
  * to be enabled.
@@ -28,36 +34,42 @@
  */
 class ApiUnblock extends ApiBase {
 
+	use ApiBlockInfoTrait;
+
+	/** @var BlockPermissionCheckerFactory */
+	private $permissionCheckerFactory;
+
+	/** @var UnblockUserFactory */
+	private $unblockUserFactory;
+
+	/** @var PermissionManager */
+	private $permissionManager;
+
+	public function __construct(
+		ApiMain $main,
+		$action,
+		BlockPermissionCheckerFactory $permissionCheckerFactory,
+		UnblockUserFactory $unblockUserFactory,
+		PermissionManager $permissionManager
+	) {
+		parent::__construct( $main, $action );
+
+		$this->permissionCheckerFactory = $permissionCheckerFactory;
+		$this->unblockUserFactory = $unblockUserFactory;
+		$this->permissionManager = $permissionManager;
+	}
+
 	/**
 	 * Unblocks the specified user or provides the reason the unblock failed.
 	 */
 	public function execute() {
-		$user = $this->getUser();
+		$performer = $this->getUser();
 		$params = $this->extractRequestParams();
 
 		$this->requireOnlyOneParameter( $params, 'id', 'user', 'userid' );
 
-		if ( !$user->isAllowed( 'block' ) ) {
+		if ( !$this->permissionManager->userHasRight( $performer, 'block' ) ) {
 			$this->dieWithError( 'apierror-permissiondenied-unblock', 'permissiondenied' );
-		}
-		# T17810: blocked admins should have limited access here
-		if ( $user->isBlocked() ) {
-			$status = SpecialBlock::checkUnblockSelf( $params['user'], $user );
-			if ( $status !== true ) {
-				$this->dieWithError(
-					$status,
-					null,
-					[ 'blockinfo' => ApiQueryUserInfo::getBlockInfo( $user->getBlock() ) ]
-				);
-			}
-		}
-
-		// Check if user can add tags
-		if ( !is_null( $params['tags'] ) ) {
-			$ableToTag = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $user );
-			if ( !$ableToTag->isOK() ) {
-				$this->dieStatus( $ableToTag );
-			}
 		}
 
 		if ( $params['userid'] !== null ) {
@@ -70,22 +82,41 @@ class ApiUnblock extends ApiBase {
 			}
 		}
 
-		$data = [
-			'Target' => is_null( $params['id'] ) ? $params['user'] : "#{$params['id']}",
-			'Reason' => $params['reason'],
-			'Tags' => $params['tags']
-		];
-		$block = Block::newFromTarget( $data['Target'] );
-		$retval = SpecialUnblock::processUnblock( $data, $this->getContext() );
-		if ( $retval !== true ) {
-			$this->dieStatus( $this->errorArrayToStatus( $retval ) );
+		$target = $params['id'] === null ? $params['user'] : "#{$params['id']}";
+
+		# T17810: blocked admins should have limited access here
+		$status = $this->permissionCheckerFactory
+			->newBlockPermissionChecker(
+				$target,
+				$performer
+			)->checkBlockPermissions();
+		if ( $status !== true ) {
+			$this->dieWithError(
+				$status,
+				null,
+				[ 'blockinfo' => $this->getBlockDetails( $performer->getBlock() ) ]
+			);
 		}
 
-		$res['id'] = $block->getId();
-		$target = $block->getType() == Block::TYPE_AUTO ? '' : $block->getTarget();
-		$res['user'] = $target instanceof User ? $target->getName() : $target;
-		$res['userid'] = $target instanceof User ? $target->getId() : 0;
-		$res['reason'] = $params['reason'];
+		$status = $this->unblockUserFactory->newUnblockUser(
+			$target,
+			$performer,
+			$params['reason'],
+			$params['tags'] ?? []
+		)->unblock();
+
+		if ( !$status->isOK() ) {
+			$this->dieStatus( $status );
+		}
+
+		$block = $status->getValue();
+		$target = $block->getType() == DatabaseBlock::TYPE_AUTO ? '' : $block->getTarget();
+		$res = [
+			'id' => $block->getId(),
+			'user' => $target instanceof User ? $target->getName() : $target,
+			'userid' => $target instanceof User ? $target->getId() : 0,
+			'reason' => $params['reason']
+		];
 		$this->getResult()->addValue( null, $this->getModuleName(), $res );
 	}
 
@@ -102,9 +133,13 @@ class ApiUnblock extends ApiBase {
 			'id' => [
 				ApiBase::PARAM_TYPE => 'integer',
 			],
-			'user' => null,
+			'user' => [
+				ApiBase::PARAM_TYPE => 'user',
+				UserDef::PARAM_ALLOWED_USER_TYPES => [ 'name', 'ip', 'cidr', 'id' ],
+			],
 			'userid' => [
-				ApiBase::PARAM_TYPE => 'integer'
+				ApiBase::PARAM_TYPE => 'integer',
+				ApiBase::PARAM_DEPRECATED => true,
 			],
 			'reason' => '',
 			'tags' => [

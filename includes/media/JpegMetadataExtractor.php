@@ -21,6 +21,8 @@
  * @ingroup Media
  */
 
+use Wikimedia\XMPReader\Reader as XMPReader;
+
 /**
  * Class for reading jpegs and extracting metadata.
  * see also BitmapMetadataHandler.
@@ -30,11 +32,11 @@
  * @ingroup Media
  */
 class JpegMetadataExtractor {
-	const MAX_JPEG_SEGMENTS = 200;
-
-	// the max segment is a sanity check.
-	// A jpeg file should never even remotely have
-	// that many segments. Your average file has about 10.
+	/**
+	 * The max segment is a sanity check. A JPEG file should never even remotely have
+	 * that many segments. Your average file has about 10.
+	 */
+	private const MAX_JPEG_SEGMENTS = 200;
 
 	/** Function to extract metadata segments of interest from jpeg files
 	 * based on GIFMetadataExtractor.
@@ -47,7 +49,7 @@ class JpegMetadataExtractor {
 	 * @return array Array of interesting segments.
 	 * @throws MWException If given invalid file.
 	 */
-	static function segmentSplitter( $filename ) {
+	public static function segmentSplitter( $filename ) {
 		$showXMP = XMPReader::isSupported();
 
 		$segmentCount = 0;
@@ -112,7 +114,7 @@ class JpegMetadataExtractor {
 				if ( $com === $oldCom ) {
 					$segments["COM"][] = $oldCom;
 				} else {
-					wfDebug( __METHOD__ . " Ignoring JPEG comment as is garbage.\n" );
+					wfDebug( __METHOD__ . " Ignoring JPEG comment as is garbage." );
 				}
 			} elseif ( $buffer === "\xE1" ) {
 				// APP1 section (Exif, XMP, and XMP extended)
@@ -120,16 +122,19 @@ class JpegMetadataExtractor {
 				$temp = self::jpegExtractMarker( $fh );
 				// check what type of app segment this is.
 				if ( substr( $temp, 0, 29 ) === "http://ns.adobe.com/xap/1.0/\x00" && $showXMP ) {
-					$segments["XMP"] = substr( $temp, 29 );
+					// use trim to remove trailing \0 chars
+					$segments["XMP"] = trim( substr( $temp, 29 ) );
 				} elseif ( substr( $temp, 0, 35 ) === "http://ns.adobe.com/xmp/extension/\x00" && $showXMP ) {
-					$segments["XMP_ext"][] = substr( $temp, 35 );
+					// use trim to remove trailing \0 chars
+					$segments["XMP_ext"][] = trim( substr( $temp, 35 ) );
 				} elseif ( substr( $temp, 0, 29 ) === "XMP\x00://ns.adobe.com/xap/1.0/\x00" && $showXMP ) {
 					// Some images (especially flickr images) seem to have this.
 					// I really have no idea what the deal is with them, but
 					// whatever...
-					$segments["XMP"] = substr( $temp, 29 );
+					// use trim to remove trailing \0 chars
+					$segments["XMP"] = trim( substr( $temp, 29 ) );
 					wfDebug( __METHOD__ . ' Found XMP section with wrong app identifier '
-						. "Using anyways.\n" );
+						. "Using anyways." );
 				} elseif ( substr( $temp, 0, 6 ) === "Exif\0\0" ) {
 					// Just need to find out what the byte order is.
 					// because php's exif plugin sucks...
@@ -140,7 +145,7 @@ class JpegMetadataExtractor {
 					} elseif ( $byteOrderMarker === 'II' ) {
 						$segments['byteOrder'] = 'LE';
 					} else {
-						wfDebug( __METHOD__ . " Invalid byte ordering?!\n" );
+						wfDebug( __METHOD__ . " Invalid byte ordering?!" );
 					}
 				}
 			} elseif ( $buffer === "\xED" ) {

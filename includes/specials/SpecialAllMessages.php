@@ -28,44 +28,104 @@
  * @ingroup SpecialPage
  */
 class SpecialAllMessages extends SpecialPage {
-	/**
-	 * @var AllMessagesTablePager
-	 */
-	protected $table;
 
-	public function __construct() {
+	/** @var Language */
+	private $contentLang;
+
+	/**
+	 * @param Language $contentLang
+	 */
+	public function __construct( Language $contentLang ) {
 		parent::__construct( 'Allmessages' );
+
+		$this->contentLang = $contentLang;
 	}
 
 	/**
-	 * Show the special page
-	 *
-	 * @param string $par Parameter passed to the page or null
+	 * @param string|null $par Parameter passed to the page or null
 	 */
 	public function execute( $par ) {
-		$request = $this->getRequest();
 		$out = $this->getOutput();
 
 		$this->setHeaders();
 
 		if ( !$this->getConfig()->get( 'UseDatabaseMessages' ) ) {
-			$out->addWikiMsg( 'allmessagesnotsupportedDB' );
+			$out->addWikiMsg( 'allmessages-not-supported-database' );
 
 			return;
 		}
 
-		$this->outputHeader( 'allmessagestext' );
 		$out->addModuleStyles( 'mediawiki.special' );
 		$this->addHelpLink( 'Help:System message' );
 
-		$this->table = new AllMessagesTablePager(
-			$this,
-			[],
-			wfGetLangObj( $request->getVal( 'lang', $par ) )
-		);
+		$contLangCode = $this->contentLang->getCode();
+		$lang = $this->getLanguage();
 
-		$out->addHTML( $this->table->buildForm() );
-		$out->addParserOutputContent( $this->table->getFullOutput() );
+		$opts = new FormOptions();
+
+		$opts->add( 'prefix', '' );
+		$opts->add( 'filter', 'all' );
+		$opts->add( 'lang', $contLangCode );
+		$opts->add( 'limit', 50 );
+
+		$opts->fetchValuesFromRequest( $this->getRequest() );
+		$opts->validateIntBounds( 'limit', 0, 5000 );
+
+		$pager = new AllMessagesTablePager( $this->getContext(), $opts, $this->getLinkRenderer() );
+
+		$formDescriptor = [
+			'prefix' => [
+				'type' => 'text',
+				'name' => 'prefix',
+				'label-message' => 'allmessages-prefix',
+			],
+
+			'filter' => [
+				'type' => 'radio',
+				'name' => 'filter',
+				'label-message' => 'allmessages-filter',
+				'options-messages' => [
+					'allmessages-filter-unmodified' => 'unmodified',
+					'allmessages-filter-all' => 'all',
+					'allmessages-filter-modified' => 'modified',
+				],
+				'default' => 'all',
+				'flatlist' => true,
+			],
+
+			'lang' => [
+				'type' => 'language',
+				'name' => 'lang',
+				'label-message' => 'allmessages-language',
+				'default' => $opts->getValue( 'lang' ),
+			],
+
+			'limit' => [
+				'type' => 'limitselect',
+				'name' => 'limit',
+				'label-message' => 'table_pager_limit_label',
+				'options' => [
+					$lang->formatNum( 20 ) => 20,
+					$lang->formatNum( 50 ) => 50,
+					$lang->formatNum( 100 ) => 100,
+					$lang->formatNum( 250 ) => 250,
+					$lang->formatNum( 500 ) => 500,
+					$lang->formatNum( 5000 ) => 5000,
+				],
+				'default' => $opts->getValue( 'limit' ),
+			],
+		];
+
+		$htmlForm = HTMLForm::factory( 'ooui', $formDescriptor, $this->getContext() );
+		$htmlForm
+			->setMethod( 'get' )
+			->setIntro( $this->msg( 'allmessagestext' ) )
+			->setWrapperLegendMsg( 'allmessages' )
+			->setSubmitTextMsg( 'allmessages-filter-submit' )
+			->prepareForm()
+			->displayForm( false );
+
+		$out->addParserOutputContent( $pager->getFullOutput() );
 	}
 
 	protected function getGroupName() {

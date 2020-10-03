@@ -19,20 +19,20 @@
  * @ingroup Pager
  */
 
+use MediaWiki\Cache\LinkBatchFactory;
 use MediaWiki\Linker\LinkRenderer;
+use MediaWiki\MediaWikiServices;
 
 class ProtectedPagesPager extends TablePager {
 
-	public $mForm, $mConds;
+	public $mConds;
 	private $type, $level, $namespace, $sizetype, $size, $indefonly, $cascadeonly, $noredirect;
 
-	/**
-	 * @var LinkRenderer
-	 */
-	private $linkRenderer;
+	/** @var LinkBatchFactory */
+	private $linkBatchFactory;
 
 	/**
-	 * @param SpecialProtectedpages $form
+	 * @param SpecialPage $form
 	 * @param array $conds
 	 * @param string $type
 	 * @param string $level
@@ -43,14 +43,25 @@ class ProtectedPagesPager extends TablePager {
 	 * @param bool $cascadeonly
 	 * @param bool $noredirect
 	 * @param LinkRenderer $linkRenderer
+	 * @param LinkBatchFactory|null $linkBatchFactory
 	 */
-	function __construct( $form, $conds = [], $type, $level, $namespace,
-		$sizetype = '', $size = 0, $indefonly = false, $cascadeonly = false, $noredirect = false,
-		LinkRenderer $linkRenderer
+	public function __construct(
+		$form,
+		$conds,
+		$type,
+		$level,
+		$namespace,
+		$sizetype,
+		$size,
+		$indefonly,
+		$cascadeonly,
+		$noredirect,
+		LinkRenderer $linkRenderer,
+		LinkBatchFactory $linkBatchFactory = null
 	) {
-		$this->mForm = $form;
+		parent::__construct( $form->getContext(), $linkRenderer );
 		$this->mConds = $conds;
-		$this->type = ( $type ) ? $type : 'edit';
+		$this->type = $type ?: 'edit';
 		$this->level = $level;
 		$this->namespace = $namespace;
 		$this->sizetype = $sizetype;
@@ -58,13 +69,12 @@ class ProtectedPagesPager extends TablePager {
 		$this->indefonly = (bool)$indefonly;
 		$this->cascadeonly = (bool)$cascadeonly;
 		$this->noredirect = (bool)$noredirect;
-		$this->linkRenderer = $linkRenderer;
-		parent::__construct( $form->getContext() );
+		$this->linkBatchFactory = $linkBatchFactory ?? MediaWikiServices::getInstance()->getLinkBatchFactory();
 	}
 
-	function preprocessResults( $result ) {
+	public function preprocessResults( $result ) {
 		# Do a link batch query
-		$lb = new LinkBatch;
+		$lb = $this->linkBatchFactory->newLinkBatch();
 		$userids = [];
 
 		foreach ( $result as $row ) {
@@ -91,7 +101,7 @@ class ProtectedPagesPager extends TablePager {
 		$lb->execute();
 	}
 
-	function getFieldNames() {
+	protected function getFieldNames() {
 		static $headers = null;
 
 		if ( $headers == [] ) {
@@ -117,9 +127,10 @@ class ProtectedPagesPager extends TablePager {
 	 * @return string HTML
 	 * @throws MWException
 	 */
-	function formatValue( $field, $value ) {
+	public function formatValue( $field, $value ) {
 		/** @var object $row */
 		$row = $this->mCurrentRow;
+		$linkRenderer = $this->getLinkRenderer();
 
 		switch ( $field ) {
 			case 'log_timestamp':
@@ -149,9 +160,9 @@ class ProtectedPagesPager extends TablePager {
 						)
 					);
 				} else {
-					$formatted = $this->linkRenderer->makeLink( $title );
+					$formatted = $linkRenderer->makeLink( $title );
 				}
-				if ( !is_null( $row->page_len ) ) {
+				if ( $row->page_len !== null ) {
 					$formatted .= $this->getLanguage()->getDirMark() .
 						' ' . Html::rawElement(
 							'span',
@@ -165,8 +176,11 @@ class ProtectedPagesPager extends TablePager {
 				$formatted = htmlspecialchars( $this->getLanguage()->formatExpiry(
 					$value, /* User preference timezone */true ) );
 				$title = Title::makeTitleSafe( $row->page_namespace, $row->page_title );
-				if ( $this->getUser()->isAllowed( 'protect' ) && $title ) {
-					$changeProtection = $this->linkRenderer->makeKnownLink(
+				if ( $title && MediaWikiServices::getInstance()
+						 ->getPermissionManager()
+						 ->userHasRight( $this->getUser(), 'protect' )
+				) {
+					$changeProtection = $linkRenderer->makeKnownLink(
 						$title,
 						$this->msg( 'protect_change' )->text(),
 						[],
@@ -235,7 +249,7 @@ class ProtectedPagesPager extends TablePager {
 						$this->getUser()
 					) ) {
 						$value = CommentStore::getStore()->getComment( 'log_comment', $row )->text;
-						$formatted = Linker::formatComment( $value !== null ? $value : '' );
+						$formatted = Linker::formatComment( $value ?? '' );
 					} else {
 						$formatted = $this->msg( 'rev-deleted-comment' )->escaped();
 					}
@@ -252,7 +266,7 @@ class ProtectedPagesPager extends TablePager {
 		return $formatted;
 	}
 
-	function getQueryInfo() {
+	public function getQueryInfo() {
 		$conds = $this->mConds;
 		$conds[] = 'pr_expiry > ' . $this->mDb->addQuotes( $this->mDb->timestamp() ) .
 			' OR pr_expiry IS NULL';
@@ -279,7 +293,7 @@ class ProtectedPagesPager extends TablePager {
 		if ( $this->level ) {
 			$conds[] = 'pr_level=' . $this->mDb->addQuotes( $this->level );
 		}
-		if ( !is_null( $this->namespace ) ) {
+		if ( $this->namespace !== null ) {
 			$conds[] = 'page_namespace=' . $this->mDb->addQuotes( $this->namespace );
 		}
 
@@ -323,15 +337,15 @@ class ProtectedPagesPager extends TablePager {
 		return parent::getTableClass() . ' mw-protectedpages';
 	}
 
-	function getIndexField() {
+	public function getIndexField() {
 		return 'pr_id';
 	}
 
-	function getDefaultSort() {
+	public function getDefaultSort() {
 		return 'pr_id';
 	}
 
-	function isFieldSortable( $field ) {
+	protected function isFieldSortable( $field ) {
 		// no index for sorting exists
 		return false;
 	}

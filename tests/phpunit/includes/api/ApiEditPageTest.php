@@ -1,5 +1,9 @@
 <?php
 
+use MediaWiki\Block\DatabaseBlock;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Revision\RevisionRecord;
+
 /**
  * Tests for MediaWiki api.php?action=edit.
  *
@@ -13,44 +17,32 @@
  */
 class ApiEditPageTest extends ApiTestCase {
 
-	protected function setUp() {
-		global $wgExtraNamespaces, $wgNamespaceContentModels, $wgContentHandlers, $wgContLang;
-
+	protected function setUp() : void {
 		parent::setUp();
 
 		$this->setMwGlobals( [
-			'wgExtraNamespaces' => $wgExtraNamespaces,
-			'wgNamespaceContentModels' => $wgNamespaceContentModels,
-			'wgContentHandlers' => $wgContentHandlers,
-			'wgContLang' => $wgContLang,
+			'wgExtraNamespaces' => [
+				12312 => 'Dummy',
+				12313 => 'Dummy_talk',
+				12314 => 'DummyNonText',
+				12315 => 'DummyNonText_talk',
+			],
+			'wgNamespaceContentModels' => [
+				12312 => 'testing',
+				12314 => 'testing-nontext',
+			],
+			'wgWatchlistExpiry' => true,
+			'wgWatchlistExpiryMaxDuration' => '6 months',
 		] );
-
-		$wgExtraNamespaces[12312] = 'Dummy';
-		$wgExtraNamespaces[12313] = 'Dummy_talk';
-		$wgExtraNamespaces[12314] = 'DummyNonText';
-		$wgExtraNamespaces[12315] = 'DummyNonText_talk';
-
-		$wgNamespaceContentModels[12312] = "testing";
-		$wgNamespaceContentModels[12314] = "testing-nontext";
-
-		$wgContentHandlers["testing"] = 'DummyContentHandlerForTesting';
-		$wgContentHandlers["testing-nontext"] = 'DummyNonTextContentHandler';
-		$wgContentHandlers["testing-serialize-error"] =
-			'DummySerializeErrorContentHandler';
-
-		MWNamespace::clearCaches();
-		$wgContLang->resetNamespaces(); # reset namespace cache
-
-		$this->doLogin();
-	}
-
-	protected function tearDown() {
-		global $wgContLang;
-
-		MWNamespace::clearCaches();
-		$wgContLang->resetNamespaces(); # reset namespace cache
-
-		parent::tearDown();
+		$this->mergeMwGlobalArrayValue( 'wgContentHandlers', [
+			'testing' => 'DummyContentHandlerForTesting',
+			'testing-nontext' => 'DummyNonTextContentHandler',
+			'testing-serialize-error' => 'DummySerializeErrorContentHandler',
+		] );
+		$this->tablesUsed = array_merge(
+			$this->tablesUsed,
+			[ 'change_tag', 'change_tag_def', 'logging', 'watchlist', 'watchlist_expiry' ]
+		);
 	}
 
 	public function testEdit() {
@@ -166,7 +158,7 @@ class ApiEditPageTest extends ApiTestCase {
 		$content = $page->getContent();
 		$this->assertNotNull( $content, 'Page should have been created' );
 
-		$text = $content->getNativeData();
+		$text = $content->getText();
 
 		$this->assertSame( $expected, $text );
 	}
@@ -189,8 +181,8 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 		$this->assertSame( 'Success', $re['edit']['result'] );
 		$newtext = WikiPage::factory( Title::newFromText( $name ) )
-			->getContent( Revision::RAW )
-			->getNativeData();
+			->getContent( RevisionRecord::RAW )
+			->getText();
 		$this->assertSame( "==section 1==\nnew content 1\n\n==section 2==\ncontent2", $newtext );
 
 		// Test that we raise a 'nosuchsection' error
@@ -229,8 +221,8 @@ class ApiEditPageTest extends ApiTestCase {
 		$this->assertSame( 'Success', $re['edit']['result'] );
 		// Check the page text is correct
 		$text = WikiPage::factory( Title::newFromText( $name ) )
-			->getContent( Revision::RAW )
-			->getNativeData();
+			->getContent( RevisionRecord::RAW )
+			->getText();
 		$this->assertSame( "== header ==\n\ntest", $text );
 
 		// Now on one that does
@@ -245,8 +237,8 @@ class ApiEditPageTest extends ApiTestCase {
 
 		$this->assertSame( 'Success', $re2['edit']['result'] );
 		$text = WikiPage::factory( Title::newFromText( $name ) )
-			->getContent( Revision::RAW )
-			->getNativeData();
+			->getContent( RevisionRecord::RAW )
+			->getText();
 		$this->assertSame( "== header ==\n\ntest\n\n== header ==\n\ntest", $text );
 	}
 
@@ -254,6 +246,7 @@ class ApiEditPageTest extends ApiTestCase {
 	 * Ensure we can edit through a redirect, if adding a section
 	 */
 	public function testEdit_redirect() {
+		$this->hideDeprecated( 'WikiPage::getRevision' );
 		static $count = 0;
 		$count++;
 
@@ -270,7 +263,7 @@ class ApiEditPageTest extends ApiTestCase {
 		$page->doEditContent( new WikitextContent( "Foo" ),
 			"testing 1", EDIT_NEW, false, self::$users['sysop']->getUser() );
 		$this->forceRevisionDate( $page, '20120101000000' );
-		$baseTime = $page->getRevision()->getTimestamp();
+		$baseTime = $page->getRevisionRecord()->getTimestamp();
 
 		// base edit for redirect
 		$rpage->doEditContent( new WikitextContent( "#REDIRECT [[$name]]" ),
@@ -290,7 +283,7 @@ class ApiEditPageTest extends ApiTestCase {
 			'basetimestamp' => $baseTime,
 			'section' => 'new',
 			'redirect' => true,
-		], null, self::$users['sysop']->getUser() );
+		] );
 
 		$this->assertSame( 'Success', $re['edit']['result'],
 			"no problems expected when following redirect" );
@@ -316,7 +309,7 @@ class ApiEditPageTest extends ApiTestCase {
 		$page->doEditContent( new WikitextContent( "Foo" ),
 			"testing 1", EDIT_NEW, false, self::$users['sysop']->getUser() );
 		$this->forceRevisionDate( $page, '20120101000000' );
-		$baseTime = $page->getRevision()->getTimestamp();
+		$baseTime = $page->getRevisionRecord()->getTimestamp();
 
 		// base edit for redirect
 		$rpage->doEditContent( new WikitextContent( "#REDIRECT [[$name]]" ),
@@ -336,7 +329,7 @@ class ApiEditPageTest extends ApiTestCase {
 				'text' => 'nix bar!',
 				'basetimestamp' => $baseTime,
 				'redirect' => true,
-			], null, self::$users['sysop']->getUser() );
+			] );
 
 			$this->fail( 'redirect-appendonly error expected' );
 		} catch ( ApiUsageException $ex ) {
@@ -344,7 +337,7 @@ class ApiEditPageTest extends ApiTestCase {
 		}
 	}
 
-	public function testEditConflict() {
+	public function testEditConflict_revid() {
 		static $count = 0;
 		$count++;
 
@@ -358,7 +351,43 @@ class ApiEditPageTest extends ApiTestCase {
 		$page->doEditContent( new WikitextContent( "Foo" ),
 			"testing 1", EDIT_NEW, false, self::$users['sysop']->getUser() );
 		$this->forceRevisionDate( $page, '20120101000000' );
-		$baseTime = $page->getRevision()->getTimestamp();
+		$baseId = $page->getRevisionRecord()->getId();
+
+		// conflicting edit
+		$page->doEditContent( new WikitextContent( "Foo bar" ),
+			"testing 2", EDIT_UPDATE, $page->getLatest(), self::$users['uploader']->getUser() );
+		$this->forceRevisionDate( $page, '20120101020202' );
+
+		// try to save edit, expect conflict
+		try {
+			$this->doApiRequestWithToken( [
+				'action' => 'edit',
+				'title' => $name,
+				'text' => 'nix bar!',
+				'baserevid' => $baseId,
+			], null, self::$users['sysop']->getUser() );
+
+			$this->fail( 'edit conflict expected' );
+		} catch ( ApiUsageException $ex ) {
+			$this->assertTrue( self::apiExceptionHasCode( $ex, 'editconflict' ) );
+		}
+	}
+
+	public function testEditConflict_timestamp() {
+		static $count = 0;
+		$count++;
+
+		// assume NS_HELP defaults to wikitext
+		$name = "Help:ApiEditPageTest_testEditConflict_$count";
+		$title = Title::newFromText( $name );
+
+		$page = WikiPage::factory( $title );
+
+		// base edit
+		$page->doEditContent( new WikitextContent( "Foo" ),
+			"testing 1", EDIT_NEW, false, self::$users['sysop']->getUser() );
+		$this->forceRevisionDate( $page, '20120101000000' );
+		$baseTime = $page->getRevisionRecord()->getTimestamp();
 
 		// conflicting edit
 		$page->doEditContent( new WikitextContent( "Foo bar" ),
@@ -372,7 +401,7 @@ class ApiEditPageTest extends ApiTestCase {
 				'title' => $name,
 				'text' => 'nix bar!',
 				'basetimestamp' => $baseTime,
-			], null, self::$users['sysop']->getUser() );
+			] );
 
 			$this->fail( 'edit conflict expected' );
 		} catch ( ApiUsageException $ex ) {
@@ -397,7 +426,7 @@ class ApiEditPageTest extends ApiTestCase {
 		$page->doEditContent( new WikitextContent( "Foo" ),
 			"testing 1", EDIT_NEW, false, self::$users['sysop']->getUser() );
 		$this->forceRevisionDate( $page, '20120101000000' );
-		$baseTime = $page->getRevision()->getTimestamp();
+		$baseTime = $page->getRevisionRecord()->getTimestamp();
 
 		// conflicting edit
 		$page->doEditContent( new WikitextContent( "Foo bar" ),
@@ -411,28 +440,28 @@ class ApiEditPageTest extends ApiTestCase {
 			'text' => 'nix bar!',
 			'basetimestamp' => $baseTime,
 			'section' => 'new',
-		], null, self::$users['sysop']->getUser() );
+		] );
 
 		$this->assertSame( 'Success', $re['edit']['result'],
 			"no edit conflict expected here" );
 	}
 
-	public function testEditConflict_bug41990() {
+	public function testEditConflict_T43990() {
 		static $count = 0;
 		$count++;
 
 		/*
-		* T43990: if the target page has a newer revision than the redirect, then editing the
-		* redirect while specifying 'redirect' and *not* specifying 'basetimestamp' erroneously
-		* caused an edit conflict to be detected.
-		*/
+		 * T43990: if the target page has a newer revision than the redirect, then editing the
+		 * redirect while specifying 'redirect' and *not* specifying 'basetimestamp' erroneously
+		 * caused an edit conflict to be detected.
+		 */
 
 		// assume NS_HELP defaults to wikitext
-		$name = "Help:ApiEditPageTest_testEditConflict_redirect_bug41990_$count";
+		$name = "Help:ApiEditPageTest_testEditConflict_redirect_T43990_$count";
 		$title = Title::newFromText( $name );
 		$page = WikiPage::factory( $title );
 
-		$rname = "Help:ApiEditPageTest_testEditConflict_redirect_bug41990_r$count";
+		$rname = "Help:ApiEditPageTest_testEditConflict_redirect_T43990_r$count";
 		$rtitle = Title::newFromText( $rname );
 		$rpage = WikiPage::factory( $rtitle );
 
@@ -458,7 +487,7 @@ class ApiEditPageTest extends ApiTestCase {
 			'text' => 'nix bar!',
 			'section' => 'new',
 			'redirect' => true,
-		], null, self::$users['sysop']->getUser() );
+		] );
 
 		$this->assertSame( 'Success', $re['edit']['result'],
 			"no edit conflict expected here" );
@@ -479,8 +508,8 @@ class ApiEditPageTest extends ApiTestCase {
 	}
 
 	public function testCheckDirectApiEditingDisallowed_forNonTextContent() {
-		$this->setExpectedException(
-			ApiUsageException::class,
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
 			'Direct editing via API is not supported for content model ' .
 				'testing used by Dummy:ApiEditPageTest_nonTextPageEdit'
 		);
@@ -529,6 +558,7 @@ class ApiEditPageTest extends ApiTestCase {
 		$name = 'Help:' . __FUNCTION__;
 		$uploader = self::$users['uploader']->getUser();
 		$sysop = self::$users['sysop']->getUser();
+
 		$apiResult = $this->doApiRequestWithToken( [
 			'action' => 'edit',
 			'title' => $name,
@@ -593,8 +623,10 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testUnsupportedContentFormat() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'Unrecognized value for parameter "contentformat": nonexistent format.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
+			'Unrecognized value for parameter "contentformat": nonexistent format.'
+		);
 
 		try {
 			$this->doApiRequestWithToken( [
@@ -611,9 +643,11 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testMismatchedContentFormat() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
 			'The requested format text/plain is not supported for content ' .
-			"model wikitext used by $name." );
+				"model wikitext used by $name."
+		);
 
 		try {
 			$this->doApiRequestWithToken( [
@@ -631,12 +665,12 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testUndoToInvalidRev() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$revId = $this->editPage( $name, 'Some text' )->value['revision']
+		$revId = $this->editPage( $name, 'Some text' )->value['revision-record']
 			->getId();
 		$revId++;
 
-		$this->setExpectedException( ApiUsageException::class,
-			"There is no revision with ID $revId." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "There is no revision with ID $revId." );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -662,9 +696,9 @@ class ApiEditPageTest extends ApiTestCase {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 		$titleObj = Title::newFromText( $name );
 
-		$revId1 = $this->editPage( $name, '1' )->value['revision']->getId();
-		$revId2 = $this->editPage( $name, '2' )->value['revision']->getId();
-		$revId3 = $this->editPage( $name, '3' )->value['revision']->getId();
+		$revId1 = $this->editPage( $name, '1' )->value['revision-record']->getId();
+		$revId2 = $this->editPage( $name, '2' )->value['revision-record']->getId();
+		$revId3 = $this->editPage( $name, '3' )->value['revision-record']->getId();
 
 		// Make the middle revision disappear
 		$dbw = wfGetDB( DB_MASTER );
@@ -672,8 +706,8 @@ class ApiEditPageTest extends ApiTestCase {
 		$dbw->update( 'revision', [ 'rev_parent_id' => $revId1 ],
 			[ 'rev_id' => $revId3 ], __METHOD__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			"There is no revision with ID $revId2." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "There is no revision with ID $revId2." );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -693,20 +727,20 @@ class ApiEditPageTest extends ApiTestCase {
 
 		$this->editPage( $name, '0' );
 
-		$revId1 = $this->editPage( $name, '1' )->value['revision']->getId();
+		$revId1 = $this->editPage( $name, '1' )->value['revision-record']->getId();
 
-		$revId2 = $this->editPage( $name, '2' )->value['revision']->getId();
+		$revId2 = $this->editPage( $name, '2' )->value['revision-record']->getId();
 
 		// Hide the middle revision
 		$list = RevisionDeleter::createList( 'revision',
 			RequestContext::getMain(), $titleObj, [ $revId1 ] );
 		$list->setVisibility( [
-			'value' => [ Revision::DELETED_TEXT => 1 ],
+			'value' => [ RevisionRecord::DELETED_TEXT => 1 ],
 			'comment' => 'Bye-bye',
 		] );
 
-		$this->setExpectedException( ApiUsageException::class,
-			"There is no revision with ID $revId1." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "There is no revision with ID $revId1." );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -726,15 +760,15 @@ class ApiEditPageTest extends ApiTestCase {
 
 		$this->editPage( $name, '0' );
 
-		$revId2 = $this->editPage( $name, '2' )->value['revision']->getId();
+		$revId2 = $this->editPage( $name, '2' )->value['revision-record']->getId();
 
-		$revId1 = $this->editPage( $name, '1' )->value['revision']->getId();
+		$revId1 = $this->editPage( $name, '1' )->value['revision-record']->getId();
 
 		// Now monkey with the timestamp
 		$dbw = wfGetDB( DB_MASTER );
 		$dbw->update(
 			'revision',
-			[ 'rev_timestamp' => wfTimestamp( TS_MW, time() - 86400 ) ],
+			[ 'rev_timestamp' => $dbw->timestamp( time() - 86400 ) ],
 			[ 'rev_id' => $revId1 ],
 			__METHOD__
 		);
@@ -746,24 +780,22 @@ class ApiEditPageTest extends ApiTestCase {
 			'undoafter' => $revId1,
 		] );
 
-		$text = ( new WikiPage( $titleObj ) )->getContent()->getNativeData();
+		$text = ( new WikiPage( $titleObj ) )->getContent()->getText();
 
-		// This is wrong!  It should be 1.  But let's test for our incorrect
-		// behavior for now, so if someone fixes it they'll fix the test as
-		// well to expect 1.  If we disabled the test, it might stay disabled
-		// even once the bug is fixed, which would be a shame.
-		$this->assertSame( '2', $text );
+		$this->assertSame( '1', $text );
 	}
 
 	public function testUndoWithConflicts() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The edit could not be undone due to conflicting intermediate edits.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
+			'The edit could not be undone due to conflicting intermediate edits.'
+		);
 
 		$this->editPage( $name, '1' );
 
-		$revId = $this->editPage( $name, '2' )->value['revision']->getId();
+		$revId = $this->editPage( $name, '2' )->value['revision-record']->getId();
 
 		$this->editPage( $name, '3' );
 
@@ -774,20 +806,16 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 
 		$text = ( new WikiPage( Title::newFromText( $name ) ) )->getContent()
-			->getNativeData();
+			->getText();
 		$this->assertSame( '3', $text );
 	}
 
-	/**
-	 * undoafter is supposed to be less than undo.  If not, we reverse their
-	 * meaning, so that the two are effectively interchangeable.
-	 */
 	public function testReversedUndoAfter() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
 		$this->editPage( $name, '0' );
-		$revId1 = $this->editPage( $name, '1' )->value['revision']->getId();
-		$revId2 = $this->editPage( $name, '2' )->value['revision']->getId();
+		$revId1 = $this->editPage( $name, '1' )->value['revision-record']->getId();
+		$revId2 = $this->editPage( $name, '2' )->value['revision-record']->getId();
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -797,8 +825,8 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 
 		$text = ( new WikiPage( Title::newFromText( $name ) ) )->getContent()
-			->getNativeData();
-		$this->assertSame( '1', $text );
+			->getText();
+		$this->assertSame( '2', $text );
 	}
 
 	public function testUndoToRevFromDifferentPage() {
@@ -806,12 +834,12 @@ class ApiEditPageTest extends ApiTestCase {
 
 		$this->editPage( "$name-1", 'Some text' );
 		$revId = $this->editPage( "$name-1", 'Some more text' )
-			->value['revision']->getId();
+			->value['revision-record']->getId();
 
 		$this->editPage( "$name-2", 'Some text' );
 
-		$this->setExpectedException( ApiUsageException::class,
-			"r$revId is not a revision of $name-2." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "r$revId is not a revision of $name-2." );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -824,13 +852,13 @@ class ApiEditPageTest extends ApiTestCase {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
 		$revId1 = $this->editPage( "$name-1", 'Some text' )
-			->value['revision']->getId();
+			->value['revision-record']->getId();
 
 		$revId2 = $this->editPage( "$name-2", 'Some text' )
-			->value['revision']->getId();
+			->value['revision-record']->getId();
 
-		$this->setExpectedException( ApiUsageException::class,
-			"r$revId1 is not a revision of $name-2." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "r$revId1 is not a revision of $name-2." );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -868,7 +896,7 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 
 		$text = ( new WikiPage( Title::newFromText( $name ) ) )
-			->getContent()->getNativeData();
+			->getContent()->getText();
 		$this->assertSame( 'Alert: Some text', $text );
 	}
 
@@ -885,7 +913,7 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 
 		$text = ( new WikiPage( Title::newFromText( $name ) ) )
-			->getContent()->getNativeData();
+			->getContent()->getText();
 		$this->assertSame( 'Some text is nice', $text );
 	}
 
@@ -903,15 +931,15 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 
 		$text = ( new WikiPage( Title::newFromText( $name ) ) )
-			->getContent()->getNativeData();
+			->getContent()->getText();
 		$this->assertSame( 'Alert: Some text is nice', $text );
 	}
 
 	public function testIncorrectMd5Text() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The supplied MD5 hash was incorrect.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'The supplied MD5 hash was incorrect.' );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -924,8 +952,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testIncorrectMd5PrependText() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The supplied MD5 hash was incorrect.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'The supplied MD5 hash was incorrect.' );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -939,8 +967,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testIncorrectMd5AppendText() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The supplied MD5 hash was incorrect.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'The supplied MD5 hash was incorrect.' );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
@@ -954,8 +982,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testCreateOnly() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The article you tried to create has been created already.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'The article you tried to create has been created already.' );
 
 		$this->editPage( $name, 'Some text' );
 		$this->assertTrue( Title::newFromText( $name )->exists() );
@@ -970,7 +998,7 @@ class ApiEditPageTest extends ApiTestCase {
 		} finally {
 			// Validate that content was not changed
 			$text = ( new WikiPage( Title::newFromText( $name ) ) )
-				->getContent()->getNativeData();
+				->getContent()->getText();
 
 			$this->assertSame( 'Some text', $text );
 		}
@@ -979,8 +1007,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testNoCreate() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			"The page you specified doesn't exist." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "The page you specified doesn't exist." );
 
 		$this->assertFalse( Title::newFromText( $name )->exists() );
 
@@ -1004,8 +1032,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testAppendWithNonTextContentHandler() {
 		$name = 'MediaWiki:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			"Can't append to pages using content model testing-nontext." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "Can't append to pages using content model testing-nontext." );
 
 		$this->setTemporaryHook( 'ContentHandlerDefaultModelFor',
 			function ( Title $title, &$model ) use ( $name ) {
@@ -1040,8 +1068,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testAppendInMediaWikiNamespaceWithSerializationError() {
 		$name = 'MediaWiki:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'Content serialization failed: Could not unserialize content' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'Content serialization failed: Could not unserialize content' );
 
 		$this->setTemporaryHook( 'ContentHandlerDefaultModelFor',
 			function ( Title $title, &$model ) use ( $name ) {
@@ -1072,7 +1100,7 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 
 		$text = ( new WikiPage( Title::newFromText( $name ) ) )
-			->getContent()->getNativeData();
+			->getContent()->getText();
 
 		$this->assertSame( "Initial content\n\n== New section ==", $text );
 	}
@@ -1080,8 +1108,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testAppendNewSectionWithInvalidContentModel() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'Sections are not supported for content model text.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'Sections are not supported for content model text.' );
 
 		$this->editPage( $name, 'Initial content' );
 
@@ -1110,9 +1138,10 @@ class ApiEditPageTest extends ApiTestCase {
 		$page = new WikiPage( Title::newFromText( $name ) );
 
 		$this->assertSame( "Initial content\n\n== My section ==\n\nMore content",
-			$page->getContent()->getNativeData() );
-		$this->assertSame( '/* My section */ new section',
-			$page->getRevision()->getComment() );
+			$page->getContent()->getText() );
+		$comment = $page->getRevisionRecord()->getComment();
+		$this->assertInstanceOf( CommentStoreComment::class, $comment );
+		$this->assertSame( '/* My section */ new section', $comment->text );
 	}
 
 	public function testAppendNewSectionWithSummary() {
@@ -1131,10 +1160,11 @@ class ApiEditPageTest extends ApiTestCase {
 		$page = new WikiPage( Title::newFromText( $name ) );
 
 		$this->assertSame( "Initial content\n\n== Add new section ==\n\nMore content",
-			$page->getContent()->getNativeData() );
+			$page->getContent()->getText() );
 		// EditPage actually assumes the summary is the section name here
-		$this->assertSame( '/* Add new section */ new section',
-			$page->getRevision()->getComment() );
+		$comment = $page->getRevisionRecord()->getComment();
+		$this->assertInstanceOf( CommentStoreComment::class, $comment );
+		$this->assertSame( '/* Add new section */ new section', $comment->text );
 	}
 
 	public function testAppendNewSectionWithTitleAndSummary() {
@@ -1154,9 +1184,10 @@ class ApiEditPageTest extends ApiTestCase {
 		$page = new WikiPage( Title::newFromText( $name ) );
 
 		$this->assertSame( "Initial content\n\n== My section ==\n\nMore content",
-			$page->getContent()->getNativeData() );
-		$this->assertSame( 'Add new section',
-			$page->getRevision()->getComment() );
+			$page->getContent()->getText() );
+		$comment = $page->getRevisionRecord()->getComment();
+		$this->assertInstanceOf( CommentStoreComment::class, $comment );
+		$this->assertSame( 'Add new section', $comment->text );
 	}
 
 	public function testAppendToSection() {
@@ -1173,7 +1204,7 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 
 		$text = ( new WikiPage( Title::newFromText( $name ) ) )
-			->getContent()->getNativeData();
+			->getContent()->getText();
 
 		$this->assertSame( "== Section 1 ==\n\nContent and more content\n\n" .
 			"== Section 2 ==\n\nFascinating!", $text );
@@ -1192,7 +1223,7 @@ class ApiEditPageTest extends ApiTestCase {
 		] );
 
 		$text = ( new WikiPage( Title::newFromText( $name ) ) )
-			->getContent()->getNativeData();
+			->getContent()->getText();
 
 		$this->assertSame( "Content and more content\n\n== Section 1 ==\n\n" .
 			"Fascinating!", $text );
@@ -1201,7 +1232,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testAppendToNonexistentSection() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class, 'There is no section 1.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'There is no section 1.' );
 
 		$this->editPage( $name, 'Content' );
 
@@ -1214,7 +1246,7 @@ class ApiEditPageTest extends ApiTestCase {
 			] );
 		} finally {
 			$text = ( new WikiPage( Title::newFromText( $name ) ) )
-				->getContent()->getNativeData();
+				->getContent()->getText();
 
 			$this->assertSame( 'Content', $text );
 		}
@@ -1223,8 +1255,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testEditMalformedSection() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The "section" parameter must be a valid section ID or "new".' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'The "section" parameter must be a valid section ID or "new".' );
 		$this->editPage( $name, 'Content' );
 
 		try {
@@ -1236,7 +1268,7 @@ class ApiEditPageTest extends ApiTestCase {
 			] );
 		} finally {
 			$text = ( new WikiPage( Title::newFromText( $name ) ) )
-				->getContent()->getNativeData();
+				->getContent()->getText();
 
 			$this->assertSame( 'Content', $text );
 		}
@@ -1244,15 +1276,15 @@ class ApiEditPageTest extends ApiTestCase {
 
 	public function testEditWithStartTimestamp() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
-		$this->setExpectedException( ApiUsageException::class,
-			'The page has been deleted since you fetched its timestamp.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'The page has been deleted since you fetched its timestamp.' );
 
 		$startTime = MWTimestamp::convert( TS_MW, time() - 1 );
 
 		$this->editPage( $name, 'Some text' );
 
 		$pageObj = new WikiPage( Title::newFromText( $name ) );
-		$pageObj->doDeleteArticle( 'Bye-bye' );
+		$pageObj->doDeleteArticleReal( 'Bye-bye', $this->getTestSysop()->getUser() );
 
 		$this->assertFalse( $pageObj->exists() );
 
@@ -1293,7 +1325,7 @@ class ApiEditPageTest extends ApiTestCase {
 		$this->editPage( $name, 'Some text' );
 
 		$pageObj = new WikiPage( Title::newFromText( $name ) );
-		$pageObj->doDeleteArticle( 'Bye-bye' );
+		$pageObj->doDeleteArticleReal( 'Bye-bye', $this->getTestSysop()->getUser() );
 
 		$this->assertFalse( $pageObj->exists() );
 
@@ -1317,10 +1349,13 @@ class ApiEditPageTest extends ApiTestCase {
 			'title' => $name,
 			'text' => 'Some text',
 			'watch' => '',
+			'watchlistexpiry' => '99990123000000',
 		] );
 
-		$this->assertTrue( Title::newFromText( $name )->exists() );
-		$this->assertTrue( $user->isWatched( Title::newFromText( $name ) ) );
+		$title = Title::newFromText( $name );
+		$this->assertTrue( $title->exists() );
+		$this->assertTrue( $user->isWatched( $title ) );
+		$this->assertTrue( $user->isTempWatched( $title ) );
 	}
 
 	public function testEditUnwatch() {
@@ -1358,20 +1393,29 @@ class ApiEditPageTest extends ApiTestCase {
 
 		$dbw = wfGetDB( DB_MASTER );
 		$this->assertSame( 'custom tag', $dbw->selectField(
-			'change_tag', 'ct_tag', [ 'ct_rev_id' => $revId ], __METHOD__ ) );
+			[ 'change_tag', 'change_tag_def' ],
+			'ctd_name',
+			[ 'ct_rev_id' => $revId ],
+			__METHOD__,
+			[ 'change_tag_def' => [ 'JOIN', 'ctd_id = ct_tag_id' ] ]
+			)
+		);
 	}
 
 	public function testEditWithoutTagPermission() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'You do not have permission to apply change tags along with your changes.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
+			'You do not have permission to apply change tags along with your changes.'
+		);
 
 		$this->assertFalse( Title::newFromText( $name )->exists() );
 
 		ChangeTags::defineTag( 'custom tag' );
 		$this->setMwGlobals( 'wgRevokePermissions',
 			[ 'user' => [ 'applychangetags' => true ] ] );
+
 		try {
 			$this->doApiRequestWithToken( [
 				'action' => 'edit',
@@ -1382,57 +1426,6 @@ class ApiEditPageTest extends ApiTestCase {
 		} finally {
 			$this->assertFalse( Title::newFromText( $name )->exists() );
 		}
-	}
-
-	public function testEditAbortedByHook() {
-		$name = 'Help:' . ucfirst( __FUNCTION__ );
-
-		$this->setExpectedException( ApiUsageException::class,
-			'The modification you tried to make was aborted by an extension.' );
-
-		$this->hideDeprecated( 'APIEditBeforeSave hook (used in ' .
-			'hook-APIEditBeforeSave-closure)' );
-
-		$this->setTemporaryHook( 'APIEditBeforeSave',
-			function () {
-				return false;
-			}
-		);
-
-		try {
-			$this->doApiRequestWithToken( [
-				'action' => 'edit',
-				'title' => $name,
-				'text' => 'Some text',
-			] );
-		} finally {
-			$this->assertFalse( Title::newFromText( $name )->exists() );
-		}
-	}
-
-	public function testEditAbortedByHookWithCustomOutput() {
-		$name = 'Help:' . ucfirst( __FUNCTION__ );
-
-		$this->hideDeprecated( 'APIEditBeforeSave hook (used in ' .
-			'hook-APIEditBeforeSave-closure)' );
-
-		$this->setTemporaryHook( 'APIEditBeforeSave',
-			function ( $unused1, $unused2, &$r ) {
-				$r['msg'] = 'Some message';
-				return false;
-			} );
-
-		$result = $this->doApiRequestWithToken( [
-			'action' => 'edit',
-			'title' => $name,
-			'text' => 'Some text',
-		] );
-		Wikimedia\restoreWarnings();
-
-		$this->assertSame( [ 'msg' => 'Some message', 'result' => 'Failure' ],
-			$result[0]['edit'] );
-
-		$this->assertFalse( Title::newFromText( $name )->exists() );
 	}
 
 	public function testEditAbortedByEditPageHookWithResult() {
@@ -1458,8 +1451,10 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testEditAbortedByEditPageHookWithNoResult() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The modification you tried to make was aborted by an extension.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
+			'The modification you tried to make was aborted by an extension.'
+		);
 
 		$this->setTemporaryHook( 'EditFilterMergedContent',
 			function () {
@@ -1481,17 +1476,18 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testEditWhileBlocked() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'You have been blocked from editing.' );
+		$this->assertNull( DatabaseBlock::newFromTarget( '127.0.0.1' ), 'Sanity check' );
 
-		$block = new Block( [
+		$block = new DatabaseBlock( [
 			'address' => self::$users['sysop']->getUser()->getName(),
 			'by' => self::$users['sysop']->getUser()->getId(),
 			'reason' => 'Capriciousness',
 			'timestamp' => '19370101000000',
 			'expiry' => 'infinity',
+			'enableAutoblock' => true,
 		] );
-		$block->insert();
+		$blockStore = MediaWikiServices::getInstance()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
 		try {
 			$this->doApiRequestWithToken( [
@@ -1499,8 +1495,12 @@ class ApiEditPageTest extends ApiTestCase {
 				'title' => $name,
 				'text' => 'Some text',
 			] );
+			$this->fail( 'Expected exception not thrown' );
+		} catch ( ApiUsageException $ex ) {
+			$this->assertSame( 'You have been blocked from editing.', $ex->getMessage() );
+			$this->assertNotNull( DatabaseBlock::newFromTarget( '127.0.0.1' ), 'Autoblock spread' );
 		} finally {
-			$block->delete();
+			$blockStore->deleteBlock( $block );
 			self::$users['sysop']->getUser()->clearInstanceCache();
 		}
 	}
@@ -1508,8 +1508,8 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testEditWhileReadOnly() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The wiki is currently in read-only mode.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( 'The wiki is currently in read-only mode.' );
 
 		$svc = \MediaWiki\MediaWikiServices::getInstance()->getReadOnlyMode();
 		$svc->setReason( "Read-only for testing" );
@@ -1528,28 +1528,21 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testCreateImageRedirectAnon() {
 		$name = 'File:' . ucfirst( __FUNCTION__ );
 
-		// @todo When ApiTestCase supports anonymous users, this exception
-		// should no longer be thrown, and the test can then be updated to test
-		// for the actual expected behavior.
-		$this->setExpectedException( ApiUsageException::class,
-			'Invalid CSRF token.' );
-
-		$this->doApiRequestWithToken( [
-			'action' => 'logout',
-		] );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "Anonymous users can't create image redirects." );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
 			'title' => $name,
 			'text' => '#REDIRECT [[File:Other file.png]]',
-		] );
+		], null, new User() );
 	}
 
 	public function testCreateImageRedirectLoggedIn() {
 		$name = 'File:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			"You don't have permission to create image redirects." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage( "You don't have permission to create image redirects." );
 
 		$this->setMwGlobals( 'wgRevokePermissions',
 			[ 'user' => [ 'upload' => true ] ] );
@@ -1564,8 +1557,10 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testTooBigEdit() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			'The content you supplied exceeds the article size limit of 1 kilobyte.' );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
+			'The content you supplied exceeds the article size limit of 1 kilobyte.'
+		);
 
 		$this->setMwGlobals( 'wgMaxArticleSize', 1 );
 
@@ -1581,28 +1576,27 @@ class ApiEditPageTest extends ApiTestCase {
 	public function testProhibitedAnonymousEdit() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		// @todo See comment in testCreateImageRedirectAnon
-		$this->setExpectedException( ApiUsageException::class,
-			'Invalid CSRF token.' );
-		$this->setMwGlobals( 'wgRevokePermissions',
-			[ '*' => [ 'edit' => true ] ] );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
+			'The action you have requested is limited to users in the group: '
+		);
 
-		$this->doApiRequestWithToken( [
-			'action' => 'logout',
-		] );
+		$this->setMwGlobals( 'wgRevokePermissions', [ '*' => [ 'edit' => true ] ] );
 
 		$this->doApiRequestWithToken( [
 			'action' => 'edit',
 			'title' => $name,
 			'text' => 'Some text',
-		] );
+		], null, new User() );
 	}
 
 	public function testProhibitedChangeContentModel() {
 		$name = 'Help:' . ucfirst( __FUNCTION__ );
 
-		$this->setExpectedException( ApiUsageException::class,
-			"You don't have permission to change the content model of a page." );
+		$this->expectException( ApiUsageException::class );
+		$this->expectExceptionMessage(
+			"You don't have permission to change the content model of a page."
+		);
 
 		$this->setMwGlobals( 'wgRevokePermissions',
 			[ 'user' => [ 'editcontentmodel' => true ] ] );
@@ -1613,5 +1607,39 @@ class ApiEditPageTest extends ApiTestCase {
 			'text' => 'Some text',
 			'contentmodel' => 'json',
 		] );
+	}
+
+	public function testMidEditContentModelMismatch() {
+		$name = 'Help:' . ucfirst( __FUNCTION__ );
+		$title = Title::newFromText( $name );
+
+		$page = WikiPage::factory( $title );
+
+		// base edit, currently in Wikitext
+		$page->doEditContent( new WikitextContent( "Foo" ),
+			"testing 1", EDIT_NEW, false, self::$users['sysop']->getUser() );
+		$this->forceRevisionDate( $page, '20120101000000' );
+		$baseId = $page->getRevisionRecord()->getId();
+
+		// Attempt edit in Javascript. This may happen, for instance, if we
+		// started editing the base content while it was in Javascript and
+		// before we save it was changed to Wikitext (base edit model).
+		$page->doEditContent( new JavaScriptContent( "Bar" ),
+			"testing 2", EDIT_UPDATE, $page->getLatest(), self::$users['uploader']->getUser() );
+		$this->forceRevisionDate( $page, '20120101020202' );
+
+		// ContentHanlder may throw exception if we attempt saving the above, so we will
+		// handle that with contentmodel-mismatch error. Test this is the case.
+		try {
+			$this->doApiRequestWithToken( [
+				'action' => 'edit',
+				'title' => $name,
+				'text' => 'different content models!',
+				'baserevid' => $baseId,
+			] );
+			$this->fail( "Should have raised an ApiUsageException" );
+		} catch ( ApiUsageException $e ) {
+			$this->assertTrue( self::apiExceptionHasCode( $e, 'contentmodel-mismatch' ) );
+		}
 	}
 }

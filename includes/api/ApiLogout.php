@@ -56,7 +56,19 @@ class ApiLogout extends ApiBase {
 
 		// Give extensions to do something after user logout
 		$injected_html = '';
-		Hooks::run( 'UserLogoutComplete', [ &$user, &$injected_html, $oldName ] );
+		$this->getHookRunner()->onUserLogoutComplete( $user, $injected_html, $oldName );
+	}
+
+	public function mustBePosted() {
+		return true;
+	}
+
+	public function needsToken() {
+		return 'csrf';
+	}
+
+	protected function getWebUITokenSalt( array $params ) {
+		return 'logoutToken';
 	}
 
 	public function isReadMode() {
@@ -65,7 +77,7 @@ class ApiLogout extends ApiBase {
 
 	protected function getExamplesMessages() {
 		return [
-			'action=logout'
+			'action=logout&token=123ABC'
 				=> 'apihelp-logout-example-logout',
 		];
 	}

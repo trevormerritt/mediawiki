@@ -21,6 +21,9 @@
  * @ingroup SpecialPage
  */
 
+use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\MediaWikiServices;
+
 /**
  * Let users manage bot passwords
  *
@@ -40,8 +43,12 @@ class SpecialBotPasswords extends FormSpecialPage {
 	/** @var string New password set, for communication between onSubmit() and onSuccess() */
 	private $password = null;
 
+	/** @var Psr\Log\LoggerInterface */
+	private $logger = null;
+
 	public function __construct() {
 		parent::__construct( 'BotPasswords', 'editmyprivateinfo' );
+		$this->logger = LoggerFactory::getInstance( 'authentication' );
 	}
 
 	/**
@@ -51,13 +58,18 @@ class SpecialBotPasswords extends FormSpecialPage {
 		return $this->getConfig()->get( 'EnableBotPasswords' );
 	}
 
+	protected function getLoginSecurityLevel() {
+		return $this->getName();
+	}
+
 	/**
 	 * Main execution point
 	 * @param string|null $par
 	 */
-	function execute( $par ) {
+	public function execute( $par ) {
 		$this->getOutput()->disallowUserJs();
 		$this->requireLogin();
+		$this->addHelpLink( 'Manual:Bot_passwords' );
 
 		$par = trim( $par );
 		if ( strlen( $par ) === 0 ) {
@@ -107,6 +119,9 @@ class SpecialBotPasswords extends FormSpecialPage {
 					'type' => 'check',
 					'label-message' => 'botpasswords-label-resetpassword',
 				];
+				if ( $this->botPassword->isInvalid() ) {
+					$fields['resetPassword']['default'] = true;
+				}
 			}
 
 			$lang = $this->getLanguage();
@@ -153,22 +168,38 @@ class SpecialBotPasswords extends FormSpecialPage {
 
 		} else {
 			$linkRenderer = $this->getLinkRenderer();
+			$passwordFactory = MediaWikiServices::getInstance()->getPasswordFactory();
+
 			$dbr = BotPassword::getDB( DB_REPLICA );
 			$res = $dbr->select(
 				'bot_passwords',
-				[ 'bp_app_id' ],
+				[ 'bp_app_id', 'bp_password' ],
 				[ 'bp_user' => $this->userId ],
 				__METHOD__
 			);
 			foreach ( $res as $row ) {
+				try {
+					$password = $passwordFactory->newFromCiphertext( $row->bp_password );
+					$passwordInvalid = $password instanceof InvalidPassword;
+					unset( $password );
+				} catch ( PasswordError $ex ) {
+					$passwordInvalid = true;
+				}
+
+				$text = $linkRenderer->makeKnownLink(
+					$this->getPageTitle( $row->bp_app_id ),
+					$row->bp_app_id
+				);
+				if ( $passwordInvalid ) {
+					$text .= $this->msg( 'word-separator' )->escaped()
+						. $this->msg( 'botpasswords-label-needsreset' )->parse();
+				}
+
 				$fields[] = [
 					'section' => 'existing',
 					'type' => 'info',
 					'raw' => true,
-					'default' => $linkRenderer->makeKnownLink(
-						$this->getPageTitle( $row->bp_app_id ),
-						$row->bp_app_id
-					),
+					'default' => $text,
 				];
 			}
 
@@ -257,6 +288,16 @@ class SpecialBotPasswords extends FormSpecialPage {
 				$bp = BotPassword::newFromCentralId( $this->userId, $this->par );
 				if ( $bp ) {
 					$bp->delete();
+					$this->logger->info(
+						"Bot password {op} for {user}@{app_id}",
+						[
+							'app_id' => $this->par,
+							'user' => $this->getUser()->getName(),
+							'centralId' => $this->userId,
+							'op' => 'delete',
+							'client_ip' => $this->getRequest()->getIP()
+						]
+					);
 				}
 				return Status::newGood();
 
@@ -275,20 +316,33 @@ class SpecialBotPasswords extends FormSpecialPage {
 			'restrictions' => $data['restrictions'],
 			'grants' => array_merge(
 				MWGrants::getHiddenGrants(),
+				// @phan-suppress-next-next-line PhanTypeMismatchArgumentInternal See phan issue #3163,
+				// it's probably failing to infer the type of $data['grants']
 				preg_replace( '/^grant-/', '', $data['grants'] )
 			)
 		] );
 
 		if ( $this->operation === 'insert' || !empty( $data['resetPassword'] ) ) {
 			$this->password = BotPassword::generatePassword( $this->getConfig() );
-			$passwordFactory = new PasswordFactory();
-			$passwordFactory->init( RequestContext::getMain()->getConfig() );
+			$passwordFactory = MediaWikiServices::getInstance()->getPasswordFactory();
 			$password = $passwordFactory->newFromPlaintext( $this->password );
 		} else {
 			$password = null;
 		}
 
 		if ( $bp->save( $this->operation, $password ) ) {
+			$this->logger->info(
+				"Bot password {op} for {user}@{app_id}",
+				[
+					'op' => $this->operation,
+					'user' => $this->getUser()->getName(),
+					'app_id' => $this->par,
+					'centralId' => $this->userId,
+					'restrictions' => $data['restrictions'],
+					'grants' => $bp->getGrants(),
+					'client_ip' => $this->getRequest()->getIP()
+				]
+			);
 			return Status::newGood();
 		} else {
 			// Messages: botpasswords-insert-failed, botpasswords-update-failed

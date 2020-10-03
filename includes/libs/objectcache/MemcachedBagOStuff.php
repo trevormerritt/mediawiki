@@ -26,75 +26,25 @@
  *
  * @ingroup Cache
  */
-class MemcachedBagOStuff extends BagOStuff {
-	/** @var MemcachedClient|Memcached */
-	protected $client;
+abstract class MemcachedBagOStuff extends MediumSpecificBagOStuff {
+	/** @var string Routing prefix appended to keys during operations */
+	protected $routingPrefix;
 
-	function __construct( array $params ) {
+	/**
+	 * @param array $params Additional parameters include:
+	 *   - routingPrefix: a routing prefix of the form "<datacenter>/<cluster>/" used to convey
+	 *      the location/strategy to use for handling keys accessed from this instance. The prefix
+	 *      is prepended to keys during cache operations. The memcached proxy must preserve these
+	 *      prefixes in any responses that include requested keys (e.g. get/gets). The proxy is
+	 *      also assumed to strip the routing prefix from the stored key name, which allows for
+	 *      unprefixed access. This can be used with mcrouter. [optional]
+	 */
+	public function __construct( array $params ) {
+		$params['segmentationSize'] = $params['segmentationSize'] ?? 917504; // < 1MiB
 		parent::__construct( $params );
 
 		$this->attrMap[self::ATTR_SYNCWRITES] = self::QOS_SYNCWRITES_BE; // unreliable
-	}
-
-	/**
-	 * Fill in some defaults for missing keys in $params.
-	 *
-	 * @param array $params
-	 * @return array
-	 */
-	protected function applyDefaultParams( $params ) {
-		return $params + [
-			'compress_threshold' => 1500,
-			'connect_timeout' => 0.5,
-			'debug' => false
-		];
-	}
-
-	protected function doGet( $key, $flags = 0 ) {
-		$casToken = null;
-
-		return $this->getWithToken( $key, $casToken, $flags );
-	}
-
-	protected function getWithToken( $key, &$casToken, $flags = 0 ) {
-		return $this->client->get( $this->validateKeyEncoding( $key ), $casToken );
-	}
-
-	public function set( $key, $value, $exptime = 0, $flags = 0 ) {
-		return $this->client->set( $this->validateKeyEncoding( $key ), $value,
-			$this->fixExpiry( $exptime ) );
-	}
-
-	protected function cas( $casToken, $key, $value, $exptime = 0 ) {
-		return $this->client->cas( $casToken, $this->validateKeyEncoding( $key ),
-			$value, $this->fixExpiry( $exptime ) );
-	}
-
-	public function delete( $key ) {
-		return $this->client->delete( $this->validateKeyEncoding( $key ) );
-	}
-
-	public function add( $key, $value, $exptime = 0 ) {
-		return $this->client->add( $this->validateKeyEncoding( $key ), $value,
-			$this->fixExpiry( $exptime ) );
-	}
-
-	public function merge( $key, callable $callback, $exptime = 0, $attempts = 10, $flags = 0 ) {
-		return $this->mergeViaCas( $key, $callback, $exptime, $attempts );
-	}
-
-	public function changeTTL( $key, $exptime = 0 ) {
-		return $this->client->touch( $this->validateKeyEncoding( $key ),
-			$this->fixExpiry( $exptime ) );
-	}
-
-	/**
-	 * Get the underlying client object. This is provided for debugging
-	 * purposes.
-	 * @return MemcachedClient|Memcached
-	 */
-	public function getClient() {
-		return $this->client;
+		$this->routingPrefix = $params['routingPrefix'] ?? '';
 	}
 
 	/**
@@ -112,29 +62,25 @@ class MemcachedBagOStuff extends BagOStuff {
 		// custom prefixes used by thing like WANObjectCache, limit to 205.
 		$charsLeft = 205 - strlen( $keyspace ) - count( $args );
 
-		$args = array_map(
-			function ( $arg ) use ( &$charsLeft ) {
-				$arg = strtr( $arg, ' ', '_' );
+		foreach ( $args as &$arg ) {
+			$arg = strtr( $arg, ' ', '_' );
 
-				// Make sure %, #, and non-ASCII chars are escaped
-				$arg = preg_replace_callback(
-					'/[^\x21-\x22\x24\x26-\x39\x3b-\x7e]+/',
-					function ( $m ) {
-						return rawurlencode( $m[0] );
-					},
-					$arg
-				);
+			// Make sure %, #, and non-ASCII chars are escaped
+			$arg = preg_replace_callback(
+				'/[^\x21-\x22\x24\x26-\x39\x3b-\x7e]+/',
+				function ( $m ) {
+					return rawurlencode( $m[0] );
+				},
+				$arg
+			);
 
-				// 33 = 32 characters for the MD5 + 1 for the '#' prefix.
-				if ( $charsLeft > 33 && strlen( $arg ) > $charsLeft ) {
-					$arg = '#' . md5( $arg );
-				}
+			// 33 = 32 characters for the MD5 + 1 for the '#' prefix.
+			if ( $charsLeft > 33 && strlen( $arg ) > $charsLeft ) {
+				$arg = '#' . md5( $arg );
+			}
 
-				$charsLeft -= strlen( $arg );
-				return $arg;
-			},
-			$args
-		);
+			$charsLeft -= strlen( $arg );
+		}
 
 		if ( $charsLeft < 0 ) {
 			return $keyspace . ':BagOStuff-long-key:##' . md5( implode( ':', $args ) );
@@ -155,38 +101,64 @@ class MemcachedBagOStuff extends BagOStuff {
 		if ( preg_match( '/[^\x21-\x7e]+/', $key ) ) {
 			throw new Exception( "Key contains invalid characters: $key" );
 		}
+
 		return $key;
 	}
 
 	/**
-	 * TTLs higher than 30 days will be detected as absolute TTLs
-	 * (UNIX timestamps), and will result in the cache entry being
-	 * discarded immediately because the expiry is in the past.
-	 * Clamp expires >30d at 30d, unless they're >=1e9 in which
-	 * case they are likely to really be absolute (1e9 = 2011-09-09)
-	 * @param int $expiry
-	 * @return int
+	 * @param string $key
+	 * @return string
 	 */
-	function fixExpiry( $expiry ) {
-		if ( $expiry > 2592000 && $expiry < 1000000000 ) {
-			$expiry = 2592000;
+	protected function validateKeyAndPrependRoute( $key ) {
+		$this->validateKeyEncoding( $key );
+
+		if ( $this->routingPrefix === '' ) {
+			return $key;
 		}
-		return (int)$expiry;
+
+		if ( $key[0] === '/' ) {
+			throw new RuntimeException( "Key '$key' already contains a route." );
+		}
+
+		return $this->routingPrefix . $key;
 	}
 
 	/**
-	 * Send a debug message to the log
-	 * @param string $text
+	 * @param string $key
+	 * @return string
 	 */
-	protected function debugLog( $text ) {
-		$this->logger->debug( $text );
-	}
-
-	public function modifySimpleRelayEvent( array $event ) {
-		if ( array_key_exists( 'val', $event ) ) {
-			$event['flg'] = 0; // data is not serialized nor gzipped (for memcached driver)
+	protected function stripRouteFromKey( $key ) {
+		if ( $this->routingPrefix === '' ) {
+			return $key;
 		}
 
-		return $event;
+		$prefixLength = strlen( $this->routingPrefix );
+		if ( substr( $key, 0, $prefixLength ) === $this->routingPrefix ) {
+			return substr( $key, $prefixLength );
+		}
+
+		return $key;
+	}
+
+	/**
+	 * @param int|float $exptime
+	 * @return int
+	 */
+	protected function fixExpiry( $exptime ) {
+		if ( $exptime < 0 ) {
+			// The PECL driver does not seem to like negative relative values
+			$expiresAt = $this->getCurrentTime() + $exptime;
+		} elseif ( $this->isRelativeExpiration( $exptime ) ) {
+			// TTLs higher than 30 days will be detected as absolute TTLs
+			// (UNIX timestamps), and will result in the cache entry being
+			// discarded immediately because the expiry is in the past.
+			// Clamp expires >30d at 30d, unless they're >=1e9 in which
+			// case they are likely to really be absolute (1e9 = 2011-09-09)
+			$expiresAt = min( $exptime, self::TTL_MONTH );
+		} else {
+			$expiresAt = $exptime;
+		}
+
+		return (int)$expiresAt;
 	}
 }

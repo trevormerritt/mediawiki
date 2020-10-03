@@ -1,68 +1,79 @@
 /* eslint-env node */
-
 module.exports = function ( grunt ) {
-
 	var wgServer = process.env.MW_SERVER,
 		wgScriptPath = process.env.MW_SCRIPT_PATH,
-		WebdriverIOconfigFile,
 		karmaProxy = {};
 
 	grunt.loadNpmTasks( 'grunt-banana-checker' );
 	grunt.loadNpmTasks( 'grunt-contrib-copy' );
-	grunt.loadNpmTasks( 'grunt-contrib-watch' );
 	grunt.loadNpmTasks( 'grunt-eslint' );
-	grunt.loadNpmTasks( 'grunt-jsonlint' );
 	grunt.loadNpmTasks( 'grunt-karma' );
 	grunt.loadNpmTasks( 'grunt-stylelint' );
-	grunt.loadNpmTasks( 'grunt-webdriver' );
+	grunt.loadNpmTasks( 'grunt-svgmin' );
 
 	karmaProxy[ wgScriptPath ] = {
 		target: wgServer + wgScriptPath,
 		changeOrigin: true
 	};
 
-	if ( process.env.JENKINS_HOME ) {
-		WebdriverIOconfigFile = './tests/selenium/wdio.conf.jenkins.js';
-	} else {
-		WebdriverIOconfigFile = './tests/selenium/wdio.conf.js';
-	}
-
 	grunt.initConfig( {
 		eslint: {
-			all: [
-				'**/*.js',
-				'!docs/**',
-				'!node_modules/**',
-				'!resources/lib/**',
-				'!resources/src/jquery.tipsy/**',
-				'!resources/src/jquery/jquery.farbtastic.js',
-				'!resources/src/mediawiki.libs/**',
-				// Third-party code of PHPUnit coverage report
-				'!tests/coverage/**',
-				'!vendor/**',
-				// Explicitly say "**/*.js" here in case of symlinks
-				'!extensions/**/*.js',
-				'!skins/**/*.js',
-				// Skip functions aren't even parseable
-				'!resources/src/mediawiki.hidpi-skip.js'
-			]
-		},
-		jsonlint: {
-			all: [
-				'**/*.json',
-				'!{docs/js,extensions,node_modules,skins,vendor}/**'
-			]
+			options: {
+				extensions: [ '.js', '.json', '.vue' ],
+				cache: true,
+				fix: grunt.option( 'fix' )
+			},
+			all: '.'
 		},
 		banana: {
 			options: {
+				requireLowerCase: false,
 				disallowBlankTranslations: false
 			},
 			core: 'languages/i18n/',
+			exif: 'languages/i18n/exif/',
 			api: 'includes/api/i18n/',
-			installer: 'includes/installer/i18n/'
+			rest: 'includes/Rest/i18n/',
+			installer: 'includes/installer/i18n/',
+			paramvalidator: 'includes/libs/ParamValidator/i18n/'
 		},
 		stylelint: {
-			src: '{resources/src,mw-config}/**/*.{css,less}'
+			src: '{resources/src,mw-config}/**/*.{css,less,vue}'
+		},
+		svgmin: {
+			options: {
+				js2svg: {
+					indent: '\t',
+					pretty: true
+				},
+				multipass: true,
+				plugins: [ {
+					cleanupIDs: false
+				}, {
+					removeDesc: false
+				}, {
+					removeRasterImages: true
+				}, {
+					removeTitle: false
+				}, {
+					removeViewBox: false
+				}, {
+					removeXMLProcInst: false
+				}, {
+					sortAttrs: true
+				} ]
+			},
+			all: {
+				files: [ {
+					expand: true,
+					cwd: 'resources/src',
+					src: [
+						'**/*.svg'
+					],
+					dest: 'resources/src/',
+					ext: '.svg'
+				} ]
+			}
 		},
 		watch: {
 			files: [
@@ -74,6 +85,14 @@ module.exports = function ( grunt ) {
 		},
 		karma: {
 			options: {
+				customLaunchers: {
+					ChromeCustom: {
+						base: 'ChromeHeadless',
+						// Chrome requires --no-sandbox in Docker/CI.
+						// WMF CI images expose CHROMIUM_FLAGS which sets that.
+						flags: ( process.env.CHROMIUM_FLAGS || '' ).split( ' ' )
+					}
+				},
 				proxies: karmaProxy,
 				files: [ {
 					pattern: wgServer + wgScriptPath + '/index.php?title=Special:JavaScriptTest/qunit/export',
@@ -81,7 +100,7 @@ module.exports = function ( grunt ) {
 					included: true,
 					served: false
 				} ],
-				logLevel: 'DEBUG',
+				logLevel: ( process.env.ZUUL_PROJECT ? 'DEBUG' : 'INFO' ),
 				frameworks: [ 'qunit' ],
 				reporters: [ 'mocha' ],
 				singleRun: true,
@@ -93,13 +112,10 @@ module.exports = function ( grunt ) {
 				crossOriginAttribute: false
 			},
 			main: {
-				browsers: [ 'Chrome' ]
-			},
-			chromium: {
-				browsers: [ 'Chromium' ]
+				browsers: [ 'ChromeCustom' ]
 			},
 			firefox: {
-				browsers: [ 'Firefox' ]
+				browsers: [ 'FirefoxHeadless' ]
 			}
 		},
 		copy: {
@@ -111,33 +127,26 @@ module.exports = function ( grunt ) {
 					return require( 'path' ).join( dest, src.replace( 'resources/', '' ) );
 				}
 			}
-		},
-
-		// Configure WebdriverIO task
-		webdriver: {
-			test: {
-				configFile: WebdriverIOconfigFile
-			}
 		}
-
 	} );
 
 	grunt.registerTask( 'assert-mw-env', function () {
+		var ok = true;
 		if ( !process.env.MW_SERVER ) {
 			grunt.log.error( 'Environment variable MW_SERVER must be set.\n' +
 				'Set this like $wgServer, e.g. "http://localhost"'
 			);
+			ok = false;
 		}
 		if ( !process.env.MW_SCRIPT_PATH ) {
 			grunt.log.error( 'Environment variable MW_SCRIPT_PATH must be set.\n' +
 				'Set this like $wgScriptPath, e.g. "/w"' );
+			ok = false;
 		}
-		return !!( process.env.MW_SERVER && process.env.MW_SCRIPT_PATH );
+		return ok;
 	} );
 
+	grunt.registerTask( 'minify', 'svgmin' );
 	grunt.registerTask( 'lint', [ 'eslint', 'banana', 'stylelint' ] );
 	grunt.registerTask( 'qunit', [ 'assert-mw-env', 'karma:main' ] );
-
-	grunt.registerTask( 'test', [ 'lint' ] );
-	grunt.registerTask( 'default', 'test' );
 };

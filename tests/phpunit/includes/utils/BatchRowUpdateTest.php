@@ -9,10 +9,10 @@
  * @covers BatchRowIterator
  * @covers BatchRowWriter
  */
-class BatchRowUpdateTest extends MediaWikiTestCase {
+class BatchRowUpdateTest extends MediaWikiIntegrationTestCase {
 
 	public function testWriterBasicFunctionality() {
-		$db = $this->mockDb();
+		$db = $this->mockDb( [ 'update' ] );
 		$writer = new BatchRowWriter( $db, 'echo_event' );
 
 		$updates = [
@@ -36,24 +36,20 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 	}
 
 	public function testReaderBasicIterate() {
-		$db = $this->mockDb();
 		$batchSize = 2;
-		$reader = new BatchRowIterator( $db, 'some_table', 'id_field', $batchSize );
-
 		$response = $this->genSelectResult( $batchSize, /*numRows*/ 5, function () {
 			static $i = 0;
 			return [ 'id_field' => ++$i ];
 		} );
-		$db->expects( $this->exactly( count( $response ) ) )
-			->method( 'select' )
-			->will( $this->consecutivelyReturnFromSelect( $response ) );
+		$db = $this->mockDbConsecutiveSelect( $response );
+		$reader = new BatchRowIterator( $db, 'some_table', 'id_field', $batchSize );
 
 		$pos = 0;
 		foreach ( $reader as $rows ) {
 			$this->assertEquals( $response[$pos], $rows, "Testing row in position $pos" );
 			$pos++;
 		}
-		// -1 is because the final array() marks the end and isnt included
+		// -1 is because the final [] marks the end and isn't included
 		$this->assertEquals( count( $response ) - 1, $pos );
 	}
 
@@ -130,7 +126,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 	public function testReaderSetFetchColumns(
 		$message, array $columns, array $primaryKeys, array $fetchColumns
 	) {
-		$db = $this->mockDb();
+		$db = $this->mockDb( [ 'select' ] );
 		$db->expects( $this->once() )
 			->method( 'select' )
 			// only testing second parameter of Database::select
@@ -202,7 +198,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 	}
 
 	protected function mockDbConsecutiveSelect( array $retvals ) {
-		$db = $this->mockDb();
+		$db = $this->mockDb( [ 'select', 'addQuotes' ] );
 		$db->expects( $this->any() )
 			->method( 'select' )
 			->will( $this->consecutivelyReturnFromSelect( $retvals ) );
@@ -222,7 +218,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 			$retvals[] = $this->returnValue( new ArrayIterator( $rows ) );
 		}
 
-		return call_user_func_array( [ $this, 'onConsecutiveCalls' ], $retvals );
+		return $this->onConsecutiveCalls( ...$retvals );
 	}
 
 	protected function genSelectResult( $batchSize, $numRows, $rowGenerator ) {
@@ -230,7 +226,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 		for ( $i = 0; $i < $numRows; $i += $batchSize ) {
 			$rows = [];
 			for ( $j = 0; $j < $batchSize && $i + $j < $numRows; $j++ ) {
-				$rows [] = (object)call_user_func( $rowGenerator );
+				$rows[] = (object)$rowGenerator();
 			}
 			$res[] = $rows;
 		}
@@ -238,11 +234,12 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 		return $res;
 	}
 
-	protected function mockDb() {
+	protected function mockDb( $methods = [] ) {
 		// @TODO: mock from Database
 		// FIXME: the constructor normally sets mAtomicLevels and mSrvCache
 		$databaseMysql = $this->getMockBuilder( Wikimedia\Rdbms\DatabaseMysqli::class )
 			->disableOriginalConstructor()
+			->setMethods( array_merge( [ 'isOpen', 'getApproximateLagStatus' ], $methods ) )
 			->getMock();
 		$databaseMysql->expects( $this->any() )
 			->method( 'isOpen' )

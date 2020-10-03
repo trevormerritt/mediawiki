@@ -1,7 +1,7 @@
 <?php
 /**
  * @todo Could use a test of extended XMP segments. Hard to find programs that
- * create example files, and creating my own in vim propbably wouldn't
+ * create example files, and creating my own in vim probably wouldn't
  * serve as a very good "test". (Adobe photoshop probably creates such files
  * but it costs money). The implementation of it currently in MediaWiki is based
  * solely on reading the standard, without any real world test files.
@@ -9,11 +9,11 @@
  * @group Media
  * @covers JpegMetadataExtractor
  */
-class JpegMetadataExtractorTest extends MediaWikiTestCase {
+class JpegMetadataExtractorTest extends MediaWikiIntegrationTestCase {
 
 	protected $filePath;
 
-	protected function setUp() {
+	protected function setUp() : void {
 		parent::setUp();
 
 		$this->filePath = __DIR__ . '/../../data/media/';
@@ -52,7 +52,7 @@ class JpegMetadataExtractorTest extends MediaWikiTestCase {
 	 */
 	public function testBinaryCommentStripped() {
 		$res = JpegMetadataExtractor::segmentSplitter( $this->filePath . 'jpeg-comment-binary.jpg' );
-		$this->assertEmpty( $res['COM'] );
+		$this->assertSame( [], $res['COM'] );
 	}
 
 	/* Very rarely a file can have multiple comments.
@@ -74,6 +74,12 @@ class JpegMetadataExtractorTest extends MediaWikiTestCase {
 		$expected = '50686f746f73686f7020332e30003842494d04040000000'
 			. '000181c02190004746573741c02190003666f6f1c020000020004';
 		$this->assertEquals( $expected, bin2hex( $res['PSIR'][0] ) );
+	}
+
+	public function testXMPExtractionNullChar() {
+		$res = JpegMetadataExtractor::segmentSplitter( $this->filePath . 'jpeg-xmp-nullchar.jpg' );
+		$expected = file_get_contents( $this->filePath . 'jpeg-xmp-psir.xmp' );
+		$this->assertEquals( $expected, $res['XMP'] );
 	}
 
 	public function testXMPExtractionAltAppId() {
@@ -113,7 +119,7 @@ class JpegMetadataExtractorTest extends MediaWikiTestCase {
 		// test file truncated right after a segment, which previously
 		// caused an infinite loop looking for the next segment byte.
 		// Should get past infinite loop and throw in wfUnpack()
-		$this->setExpectedException( 'MWException' );
+		$this->expectException( MWException::class );
 		$res = JpegMetadataExtractor::segmentSplitter( $this->filePath . 'jpeg-segment-loop1.jpg' );
 	}
 
@@ -122,7 +128,7 @@ class JpegMetadataExtractorTest extends MediaWikiTestCase {
 		// would cause a seek past end of file. Seek past end of file
 		// doesn't actually fail, but prevents further reading and was
 		// devolving into the previous case (testInfiniteRead).
-		$this->setExpectedException( 'MWException' );
+		$this->expectException( MWException::class );
 		$res = JpegMetadataExtractor::segmentSplitter( $this->filePath . 'jpeg-segment-loop2.jpg' );
 	}
 }

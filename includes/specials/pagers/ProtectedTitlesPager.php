@@ -19,28 +19,65 @@
  * @ingroup Pager
  */
 
+use MediaWiki\Cache\LinkBatchFactory;
+use MediaWiki\MediaWikiServices;
+
 /**
  * @ingroup Pager
  */
 class ProtectedTitlesPager extends AlphabeticPager {
 
-	public $mForm, $mConds;
+	/**
+	 * @var SpecialProtectedtitles
+	 */
+	public $mForm;
 
-	function __construct( $form, $conds = [], $type, $level, $namespace,
-		$sizetype = '', $size = 0
+	/**
+	 * @var array
+	 */
+	public $mConds;
+
+	/** @var string|null */
+	private $level;
+
+	/** @var int|null */
+	private $namespace;
+
+	/** @var LinkBatchFactory */
+	private $linkBatchFactory;
+
+	/**
+	 * @param SpecialProtectedtitles $form
+	 * @param array $conds
+	 * @param string|null $type
+	 * @param string|null $level
+	 * @param int|null $namespace
+	 * @param string|null $sizetype
+	 * @param int|null $size
+	 * @param LinkBatchFactory|null $linkBatchFactory
+	 */
+	public function __construct(
+		$form,
+		$conds,
+		$type,
+		$level,
+		$namespace,
+		$sizetype = '',
+		$size = 0,
+		LinkBatchFactory $linkBatchFactory = null
 	) {
 		$this->mForm = $form;
 		$this->mConds = $conds;
 		$this->level = $level;
 		$this->namespace = $namespace;
-		$this->size = intval( $size );
 		parent::__construct( $form->getContext() );
+		$this->linkBatchFactory = $linkBatchFactory ?? MediaWikiServices::getInstance()->getLinkBatchFactory();
 	}
 
-	function getStartBody() {
+	protected function getStartBody() {
 		# Do a link batch query
 		$this->mResult->seek( 0 );
-		$lb = new LinkBatch;
+		$lb = $this->linkBatchFactory->newLinkBatch();
 
 		foreach ( $this->mResult as $row ) {
 			$lb->add( $row->pt_namespace, $row->pt_title );
@@ -54,18 +91,18 @@ class ProtectedTitlesPager extends AlphabeticPager {
 	/**
 	 * @return Title
 	 */
-	function getTitle() {
-		return $this->mForm->getTitle();
+	public function getTitle() {
+		return $this->mForm->getPageTitle();
 	}
 
-	function formatRow( $row ) {
+	public function formatRow( $row ) {
 		return $this->mForm->formatRow( $row );
 	}
 
 	/**
 	 * @return array
 	 */
-	function getQueryInfo() {
+	public function getQueryInfo() {
 		$conds = $this->mConds;
 		$conds[] = 'pt_expiry > ' . $this->mDb->addQuotes( $this->mDb->timestamp() ) .
 			' OR pt_expiry IS NULL';
@@ -73,7 +110,7 @@ class ProtectedTitlesPager extends AlphabeticPager {
 			$conds['pt_create_perm'] = $this->level;
 		}
 
-		if ( !is_null( $this->namespace ) ) {
+		if ( $this->namespace !== null ) {
 			$conds[] = 'pt_namespace=' . $this->mDb->addQuotes( $this->namespace );
 		}
 
@@ -85,7 +122,7 @@ class ProtectedTitlesPager extends AlphabeticPager {
 		];
 	}
 
-	function getIndexField() {
+	public function getIndexField() {
 		return 'pt_timestamp';
 	}
 }

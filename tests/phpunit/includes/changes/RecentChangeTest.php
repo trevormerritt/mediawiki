@@ -1,17 +1,18 @@
 <?php
-use Wikimedia\ScopedCallback;
+
+use PHPUnit\Framework\MockObject\MockObject;
 
 /**
  * @group Database
  */
-class RecentChangeTest extends MediaWikiTestCase {
+class RecentChangeTest extends MediaWikiIntegrationTestCase {
 	protected $title;
 	protected $target;
 	protected $user;
 	protected $user_comment;
 	protected $context;
 
-	public function setUp() {
+	protected function setUp() : void {
 		parent::setUp();
 
 		$this->title = Title::newFromText( 'SomeTitle' );
@@ -30,13 +31,14 @@ class RecentChangeTest extends MediaWikiTestCase {
 		$user = $this->getTestUser()->getUser();
 		$actorId = $user->getActorId();
 
-		$row = new stdClass();
-		$row->rc_foo = 'AAA';
-		$row->rc_timestamp = '20150921134808';
-		$row->rc_deleted = 'bar';
-		$row->rc_comment_text = 'comment';
-		$row->rc_comment_data = null;
-		$row->rc_user = $user->getId();
+		$row = (object)[
+			'rc_foo' => 'AAA',
+			'rc_timestamp' => '20150921134808',
+			'rc_deleted' => 'bar',
+			'rc_comment_text' => 'comment',
+			'rc_comment_data' => null,
+			'rc_user' => $user->getId(),
+		];
 
 		$rc = RecentChange::newFromRow( $row );
 
@@ -53,12 +55,13 @@ class RecentChangeTest extends MediaWikiTestCase {
 		];
 		$this->assertEquals( $expected, $rc->getAttributes() );
 
-		$row = new stdClass();
-		$row->rc_foo = 'AAA';
-		$row->rc_timestamp = '20150921134808';
-		$row->rc_deleted = 'bar';
-		$row->rc_comment = 'comment';
-		$row->rc_user = $user->getId();
+		$row = (object)[
+			'rc_foo' => 'AAA',
+			'rc_timestamp' => '20150921134808',
+			'rc_deleted' => 'bar',
+			'rc_comment' => 'comment',
+			'rc_user' => $user->getId(),
+		];
 
 		Wikimedia\suppressWarnings();
 		$rc = RecentChange::newFromRow( $row );
@@ -175,7 +178,7 @@ class RecentChangeTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @return PHPUnit_Framework_MockObject_MockObject|PageProps
+	 * @return MockObject|PageProps
 	 */
 	private function getMockPageProps() {
 		return $this->getMockBuilder( PageProps::class )
@@ -203,7 +206,7 @@ class RecentChangeTest extends MediaWikiTestCase {
 			->with( $categoryTitle, 'hiddencat' )
 			->will( $this->returnValue( $isHidden ? [ $categoryTitle->getArticleID() => '' ] : [] ) );
 
-		$scopedOverride = PageProps::overrideInstance( $pageProps );
+		$this->setService( 'PageProps', $pageProps );
 
 		$rc = RecentChange::newForCategorization(
 			'0',
@@ -218,7 +221,5 @@ class RecentChangeTest extends MediaWikiTestCase {
 		);
 
 		$this->assertEquals( $isHidden, $rc->getParam( 'hidden-cat' ) );
-
-		ScopedCallback::consume( $scopedOverride );
 	}
 }

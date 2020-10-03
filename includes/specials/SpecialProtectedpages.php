@@ -21,6 +21,8 @@
  * @ingroup SpecialPage
  */
 
+use MediaWiki\MediaWikiServices;
+
 /**
  * A special page that lists protected pages
  *
@@ -38,6 +40,7 @@ class SpecialProtectedpages extends SpecialPage {
 		$this->setHeaders();
 		$this->outputHeader();
 		$this->getOutput()->addModuleStyles( 'mediawiki.special' );
+		$this->addHelpLink( 'Help:Protected_pages' );
 
 		$request = $this->getRequest();
 		$type = $request->getVal( $this->IdType );
@@ -45,9 +48,11 @@ class SpecialProtectedpages extends SpecialPage {
 		$sizetype = $request->getVal( 'size-mode' );
 		$size = $request->getIntOrNull( 'size' );
 		$ns = $request->getIntOrNull( 'namespace' );
-		$indefOnly = $request->getBool( 'indefonly' ) ? 1 : 0;
-		$cascadeOnly = $request->getBool( 'cascadeonly' ) ? 1 : 0;
-		$noRedirect = $request->getBool( 'noredirect' ) ? 1 : 0;
+
+		$filters = $request->getArray( 'wpfilters', [] );
+		$indefOnly = in_array( 'indefonly', $filters );
+		$cascadeOnly = in_array( 'cascadeonly', $filters );
+		$noRedirect = in_array( 'noredirect', $filters );
 
 		$pager = new ProtectedPagesPager(
 			$this,
@@ -60,7 +65,8 @@ class SpecialProtectedpages extends SpecialPage {
 			$indefOnly,
 			$cascadeOnly,
 			$noRedirect,
-			$this->getLinkRenderer()
+			$this->getLinkRenderer(),
+			MediaWikiServices::getInstance()->getLinkBatchFactory()
 		);
 
 		$this->getOutput()->addHTML( $this->showOptions(
@@ -69,9 +75,7 @@ class SpecialProtectedpages extends SpecialPage {
 			$level,
 			$sizetype,
 			$size,
-			$indefOnly,
-			$cascadeOnly,
-			$noRedirect
+			$filters
 		) );
 
 		if ( $pager->getNumRows() ) {
@@ -87,13 +91,12 @@ class SpecialProtectedpages extends SpecialPage {
 	 * @param string $level Restriction level
 	 * @param string $sizetype "min" or "max"
 	 * @param int $size
-	 * @param bool $indefOnly Only indefinite protection
-	 * @param bool $cascadeOnly Only cascading protection
-	 * @param bool $noRedirect Don't show redirects
+	 * @param array $filters Filters set for the pager: indefOnly,
+	 *   cascadeOnly, noRedirect
 	 * @return string Input form
 	 */
-	protected function showOptions( $namespace, $type = 'edit', $level, $sizetype,
-		$size, $indefOnly, $cascadeOnly, $noRedirect
+	protected function showOptions( $namespace, $type, $level, $sizetype,
+		$size, $filters
 	) {
 		$formDescriptor = [
 			'namespace' => [
@@ -106,31 +109,23 @@ class SpecialProtectedpages extends SpecialPage {
 			],
 			'typemenu' => $this->getTypeMenu( $type ),
 			'levelmenu' => $this->getLevelMenu( $level ),
-			'expirycheck' => [
-				'type' => 'check',
-				'label' => $this->msg( 'protectedpages-indef' )->text(),
-				'name' => 'indefonly',
-				'id' => 'indefonly',
-			],
-			'cascadecheck' => [
-				'type' => 'check',
-				'label' => $this->msg( 'protectedpages-cascade' )->text(),
-				'name' => 'cascadeonly',
-				'id' => 'cascadeonly',
-			],
-			'redirectcheck' => [
-				'type' => 'check',
-				'label' => $this->msg( 'protectedpages-noredirect' )->text(),
-				'name' => 'noredirect',
-				'id' => 'noredirect',
+			'filters' => [
+				'class' => HTMLMultiSelectField::class,
+				'label' => $this->msg( 'protectedpages-filters' )->text(),
+				'flatlist' => true,
+				'options-messages' => [
+					'protectedpages-indef' => 'indefonly',
+					'protectedpages-cascade' => 'cascadeonly',
+					'protectedpages-noredirect' => 'noredirect',
+				],
+				'default' => $filters,
 			],
 			'sizelimit' => [
 				'class' => HTMLSizeFilterField::class,
 				'name' => 'size',
 			]
 		];
-		$htmlForm = new HTMLForm( $formDescriptor, $this->getContext() );
-		$htmlForm
+		$htmlForm = HTMLForm::factory( 'ooui', $formDescriptor, $this->getContext() )
 			->setMethod( 'get' )
 			->setWrapperLegendMsg( 'protectedpages' )
 			->setSubmitText( $this->msg( 'protectedpages-submit' )->text() );

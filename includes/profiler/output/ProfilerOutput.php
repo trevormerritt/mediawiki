@@ -16,19 +16,24 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Profiler
  */
 
+use MediaWiki\Logger\LoggerFactory;
+use Psr\Log\LoggerInterface;
+
 /**
- * Base class for profiling output
+ * Base class for profiling output.
  *
- * Since 1.25
+ * @ingroup Profiler
+ * @since 1.25
  */
 abstract class ProfilerOutput {
 	/** @var Profiler */
 	protected $collector;
+	/** @var LoggerInterface */
+	protected $logger;
 	/** @var array Configuration of $wgProfiler */
-	protected $params = [];
+	protected $params;
 
 	/**
 	 * @param Profiler $collector The actual profiler
@@ -37,6 +42,7 @@ abstract class ProfilerOutput {
 	public function __construct( Profiler $collector, array $params ) {
 		$this->collector = $collector;
 		$this->params = $params;
+		$this->logger = LoggerFactory::getInstance( 'profiler' );
 	}
 
 	/**
@@ -48,7 +54,19 @@ abstract class ProfilerOutput {
 	}
 
 	/**
-	 * Log MediaWiki-style profiling data
+	 * May the log() try to write to standard output?
+	 * @return bool
+	 * @since 1.33
+	 */
+	public function logsToOutput() {
+		return false;
+	}
+
+	/**
+	 * Log MediaWiki-style profiling data.
+	 *
+	 * For classes that enable logsToOutput(), this must not
+	 * be called unless Profiler::setAllowOutput is enabled.
 	 *
 	 * @param array $stats Result of Profiler::getFunctionStats()
 	 */

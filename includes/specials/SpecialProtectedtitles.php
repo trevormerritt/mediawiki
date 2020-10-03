@@ -21,6 +21,8 @@
  * @ingroup SpecialPage
  */
 
+use MediaWiki\MediaWikiServices;
+
 /**
  * A special page that list protected titles from creation
  *
@@ -34,9 +36,10 @@ class SpecialProtectedtitles extends SpecialPage {
 		parent::__construct( 'Protectedtitles' );
 	}
 
-	function execute( $par ) {
+	public function execute( $par ) {
 		$this->setHeaders();
 		$this->outputHeader();
+		$this->addHelpLink( 'Help:Protected_pages' );
 
 		$request = $this->getRequest();
 		$type = $request->getVal( $this->IdType );
@@ -45,7 +48,16 @@ class SpecialProtectedtitles extends SpecialPage {
 		$size = $request->getIntOrNull( 'size' );
 		$NS = $request->getIntOrNull( 'namespace' );
 
-		$pager = new ProtectedTitlesPager( $this, [], $type, $level, $NS, $sizetype, $size );
+		$pager = new ProtectedTitlesPager(
+			$this,
+			[],
+			$type,
+			$level,
+			$NS,
+			$sizetype,
+			$size,
+			MediaWikiServices::getInstance()->getLinkBatchFactory()
+		);
 
 		$this->getOutput()->addHTML( $this->showOptions( $NS, $type, $level ) );
 
@@ -66,7 +78,7 @@ class SpecialProtectedtitles extends SpecialPage {
 	 * @param object $row Database row
 	 * @return string
 	 */
-	function formatRow( $row ) {
+	public function formatRow( $row ) {
 		$title = Title::makeTitleSafe( $row->pt_namespace, $row->pt_title );
 		if ( !$title ) {
 			return Html::rawElement(
@@ -110,50 +122,35 @@ class SpecialProtectedtitles extends SpecialPage {
 	 * @param string $type
 	 * @param string $level
 	 * @return string
-	 * @private
+	 * @internal
 	 */
-	function showOptions( $namespace, $type = 'edit', $level ) {
-		$action = htmlspecialchars( wfScript() );
-		$title = $this->getPageTitle();
-		$special = htmlspecialchars( $title->getPrefixedDBkey() );
-
-		return "<form action=\"$action\" method=\"get\">\n" .
-			'<fieldset>' .
-			Xml::element( 'legend', [], $this->msg( 'protectedtitles' )->text() ) .
-			Html::hidden( 'title', $special ) . "&#160;\n" .
-			$this->getNamespaceMenu( $namespace ) . "&#160;\n" .
-			$this->getLevelMenu( $level ) . "&#160;\n" .
-			"&#160;" . Xml::submitButton( $this->msg( 'protectedtitles-submit' )->text() ) . "\n" .
-			"</fieldset></form>";
-	}
-
-	/**
-	 * Prepare the namespace filter drop-down; standard namespace
-	 * selector, sans the MediaWiki namespace
-	 *
-	 * @param string|null $namespace Pre-select namespace
-	 * @return string
-	 */
-	function getNamespaceMenu( $namespace = null ) {
-		return Html::namespaceSelector(
-			[
-				'selected' => $namespace,
-				'all' => '',
-				'label' => $this->msg( 'namespace' )->text()
-			], [
+	private function showOptions( $namespace, $type, $level ) {
+		$formDescriptor = [
+			'namespace' => [
+				'class' => HTMLSelectNamespace::class,
 				'name' => 'namespace',
 				'id' => 'namespace',
-				'class' => 'namespaceselector',
-			]
-		);
+				'cssclass' => 'namespaceselector',
+				'all' => '',
+				'label' => $this->msg( 'namespace' )->text()
+			],
+			'levelmenu' => $this->getLevelMenu( $level )
+		];
+
+		$htmlForm = HTMLForm::factory( 'ooui', $formDescriptor, $this->getContext() )
+			->setMethod( 'get' )
+			->setWrapperLegendMsg( 'protectedtitles' )
+			->setSubmitText( $this->msg( 'protectedtitles-submit' )->text() );
+
+		return $htmlForm->prepareForm()->getHTML( false );
 	}
 
 	/**
 	 * @param string $pr_level Determines which option is selected as default
-	 * @return string Formatted HTML
-	 * @private
+	 * @return string|array
+	 * @internal
 	 */
-	function getLevelMenu( $pr_level ) {
+	private function getLevelMenu( $pr_level ) {
 		// Temporary array
 		$m = [ $this->msg( 'restriction-level-all' )->text() => 0 ];
 		$options = [];
@@ -173,14 +170,16 @@ class SpecialProtectedtitles extends SpecialPage {
 		}
 		// Third pass generates sorted XHTML content
 		foreach ( $m as $text => $type ) {
-			$selected = ( $type == $pr_level );
-			$options[] = Xml::option( $text, $type, $selected );
+			$options[ $text ] = $type;
 		}
 
-		return Xml::label( $this->msg( 'restriction-level' )->text(), $this->IdLevel ) . '&#160;' .
-			Xml::tags( 'select',
-				[ 'id' => $this->IdLevel, 'name' => $this->IdLevel ],
-				implode( "\n", $options ) );
+		return [
+			'type' => 'select',
+			'options' => $options,
+			'label' => $this->msg( 'restriction-level' )->text(),
+			'name' => $this->IdLevel,
+			'id' => $this->IdLevel
+		];
 	}
 
 	protected function getGroupName() {

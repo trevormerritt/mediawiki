@@ -1,7 +1,5 @@
 <?php
 /**
- * Value object for CommentStore
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -19,10 +17,14 @@
  *
  * @file
  */
+use MediaWiki\MediaWikiServices;
 
 /**
- * CommentStoreComment represents a comment stored by CommentStore. The fields
- * should be considered read-only.
+ * Value object for a comment stored by CommentStore.
+ *
+ * The fields should be considered read-only.
+ *
+ * @ingroup CommentStore
  * @since 1.30
  */
 class CommentStoreComment {
@@ -40,7 +42,7 @@ class CommentStoreComment {
 	public $data;
 
 	/**
-	 * @private For use by CommentStore only. Use self::newUnsavedComment() instead.
+	 * @internal For use by CommentStore only. Use self::newUnsavedComment() instead.
 	 * @param int|null $id
 	 * @param string $text
 	 * @param Message|null $message
@@ -49,7 +51,7 @@ class CommentStoreComment {
 	public function __construct( $id, $text, Message $message = null, array $data = null ) {
 		$this->id = $id;
 		$this->text = $text;
-		$this->message = $message ?: new RawMessage( '$1', [ $text ] );
+		$this->message = $message ?: new RawMessage( '$1', [ Message::plaintextParam( $text ) ] );
 		$this->data = $data;
 	}
 
@@ -63,8 +65,6 @@ class CommentStoreComment {
 	 * @return CommentStoreComment
 	 */
 	public static function newUnsavedComment( $comment, array $data = null ) {
-		global $wgContLang;
-
 		if ( $comment instanceof CommentStoreComment ) {
 			return $comment;
 		}
@@ -79,7 +79,8 @@ class CommentStoreComment {
 
 		if ( $comment instanceof Message ) {
 			$message = clone $comment;
-			$text = $message->inLanguage( $wgContLang ) // Avoid $wgForceUIMsgAsContentMsg
+			// Avoid $wgForceUIMsgAsContentMsg
+			$text = $message->inLanguage( MediaWikiServices::getInstance()->getContentLanguage() )
 				->setInterfaceMessageFlag( true )
 				->text();
 			return new CommentStoreComment( null, $text, $message, $data );
